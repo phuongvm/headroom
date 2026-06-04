@@ -379,7 +379,13 @@ headroom_latency_ms_sum
 export HEADROOM_HOST=0.0.0.0
 export HEADROOM_PORT=8787
 export HEADROOM_BUDGET=100.0
+
+# Route OpenAI passthrough requests to a custom endpoint
 export OPENAI_TARGET_API_URL=https://custom.openai.endpoint.com
+
+# Route Anthropic passthrough requests to a custom endpoint
+export ANTHROPIC_TARGET_API_URL=https://litellm.company.internal
+
 headroom proxy
 ```
 
