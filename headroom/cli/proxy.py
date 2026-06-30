@@ -683,6 +683,45 @@ def dashboard(port: int, no_open: bool) -> None:
     default=None,
     help=("API key for hosted Qdrant (e.g. Qdrant Cloud). Also reads HEADROOM_QDRANT_API_KEY."),
 )
+@click.option(
+    "--memory-backend",
+    type=click.Choice(["local", "qdrant-neo4j"], case_sensitive=False),
+    default=None,
+    envvar="HEADROOM_MEMORY_BACKEND",
+    help=(
+        "Memory backend to use. 'local' (default) stores memories in a per-project "
+        "SQLite database. 'qdrant-neo4j' stores vectors in Qdrant and graph data in Neo4j. "
+        "Env: HEADROOM_MEMORY_BACKEND."
+    ),
+)
+@click.option(
+    "--memory-neo4j-uri",
+    default=None,
+    envvar="HEADROOM_NEO4J_URI",
+    help=(
+        "Neo4j Bolt connection URI for the qdrant-neo4j backend "
+        "(e.g. neo4j://neo4j:7687). Default: neo4j://localhost:7687. "
+        "Env: HEADROOM_NEO4J_URI."
+    ),
+)
+@click.option(
+    "--memory-neo4j-user",
+    default=None,
+    envvar="HEADROOM_NEO4J_USER",
+    help=(
+        "Neo4j username for the qdrant-neo4j backend. Default: neo4j. "
+        "Env: HEADROOM_NEO4J_USER."
+    ),
+)
+@click.option(
+    "--memory-neo4j-password",
+    default=None,
+    envvar="HEADROOM_NEO4J_PASSWORD",
+    help=(
+        "Neo4j password for the qdrant-neo4j backend. Default: empty. "
+        "Env: HEADROOM_NEO4J_PASSWORD."
+    ),
+)
 # Traffic Learning (live pattern extraction from proxy traffic)
 @click.option(
     "--learn",
@@ -871,6 +910,10 @@ def proxy(
     memory_qdrant_host: str | None,
     memory_qdrant_port: int | None,
     memory_qdrant_api_key: str | None,
+    memory_backend: str | None,
+    memory_neo4j_uri: str | None,
+    memory_neo4j_user: str | None,
+    memory_neo4j_password: str | None,
     learn: bool,
     no_learn: bool,
     min_evidence: int | None,
@@ -1144,6 +1187,19 @@ def proxy(
         memory_inject_context=not no_memory_context,
         memory_top_k=memory_top_k,
         **qdrant_overrides,
+        # Memory backend selection and Neo4j connection (CLI > env > default).
+        **({
+            "memory_backend": memory_backend.lower(),
+        } if memory_backend is not None else {}),
+        **({
+            "memory_neo4j_uri": memory_neo4j_uri,
+        } if memory_neo4j_uri is not None else {}),
+        **({
+            "memory_neo4j_user": memory_neo4j_user,
+        } if memory_neo4j_user is not None else {}),
+        **({
+            "memory_neo4j_password": memory_neo4j_password,
+        } if memory_neo4j_password is not None else {}),
         # Traffic Learning: only with --learn, never with --no-learn
         # Stateless mode disables learning (requires filesystem)
         traffic_learning_enabled=False if is_stateless else (learn and not no_learn),
