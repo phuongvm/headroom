@@ -797,12 +797,48 @@ class DirectMem0Adapter:
         results = await asyncio.to_thread(
             self._mem0_client.search,
             query=query,
-            user_id=user_id,
-            limit=top_k,
+            filters={"user_id": user_id},
+            top_k=top_k,
         )
 
         search_results: list[MemorySearchResult] = []
         result_list = results if isinstance(results, list) else results.get("results", [])
+        if not result_list and self._qdrant_client is not None:
+            try:
+                from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+                query_embedding = await asyncio.to_thread(self._embed, query)
+                must_conditions = [
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id)),
+                ]
+                if session_id:
+                    must_conditions.append(
+                        FieldCondition(key="session_id", match=MatchValue(value=session_id))
+                    )
+                qdrant_response = await asyncio.to_thread(
+                    self._qdrant_client.query_points,
+                    collection_name=self._config.collection_name,
+                    query=query_embedding,
+                    query_filter=Filter(must=must_conditions),
+                    limit=top_k,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                qdrant_points = getattr(qdrant_response, "points", qdrant_response)
+                result_list = [
+                    {
+                        "id": str(point.id),
+                        "memory": (point.payload or {}).get(
+                            "memory", (point.payload or {}).get("content", "")
+                        ),
+                        "score": getattr(point, "score", 0.0),
+                        "metadata": point.payload or {},
+                    }
+                    for point in qdrant_points
+                ]
+            except Exception as exc:  # pragma: no cover - search should degrade gracefully
+                logger.warning("Direct Qdrant memory search fallback failed: %s", exc)
+                result_list = []
 
         for result in result_list:
             # Mem0 returns memory in metadata.memory when using direct Qdrant writes

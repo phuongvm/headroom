@@ -35,6 +35,36 @@ def test_resolve_api_overrides_prefers_explicit_values_over_environment(monkeypa
     )
 
 
+def test_resolve_api_overrides_uses_openai_target_not_openai_base_url(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://memory-openai.example/v1")
+    monkeypatch.setenv("OPENAI_TARGET_API_URL", "https://proxy-target-openai.example/v1")
+
+    overrides = resolve_api_overrides(
+        anthropic_api_url=None,
+        openai_api_url=None,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+        vertex_api_url=None,
+    )
+
+    assert overrides.openai == "https://proxy-target-openai.example/v1"
+
+
+def test_resolve_api_overrides_ignores_openai_base_url_without_target(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://memory-openai.example/v1")
+    monkeypatch.delenv("OPENAI_TARGET_API_URL", raising=False)
+
+    overrides = resolve_api_overrides(
+        anthropic_api_url=None,
+        openai_api_url=None,
+        gemini_api_url=None,
+        cloudcode_api_url=None,
+        vertex_api_url=None,
+    )
+
+    assert overrides.openai is None
+
+
 def test_resolve_api_targets_normalizes_trailing_v1() -> None:
     targets = resolve_api_targets(
         ProviderApiOverrides(

@@ -688,7 +688,11 @@ class AnthropicHandlerMixin:
             # uses `request.headers.get(...)` directly above; memory user-id
             # is read from `request.headers` below if needed. From this
             # point on, `headers` is the upstream-bound copy.
-            from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+            from headroom.proxy.helpers import (
+                _strip_internal_headers,
+                ensure_upstream_auth,
+                log_outbound_headers,
+            )
 
             _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
             headers = _strip_internal_headers(headers)
@@ -698,6 +702,7 @@ class AnthropicHandlerMixin:
                 - sum(1 for k in headers if k.lower().startswith("x-headroom-")),
                 request_id=request_id,
             )
+            ensure_upstream_auth(headers, "anthropic")
 
             # Subscription tracker: notify on OAuth requests (not API-key requests)
             _auth_header = headers.get("authorization", "")
@@ -2874,7 +2879,11 @@ class AnthropicHandlerMixin:
         client = classify_client(headers, default="claude")
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
-        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+        from headroom.proxy.helpers import (
+            _strip_internal_headers,
+            ensure_upstream_auth,
+            log_outbound_headers,
+        )
 
         _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
         headers = _strip_internal_headers(headers)
@@ -2883,6 +2892,7 @@ class AnthropicHandlerMixin:
             stripped_count=_pre_strip_count,
             request_id=request_id,
         )
+        ensure_upstream_auth(headers, "anthropic")
 
         # Track compression stats across all batch requests
         total_original_tokens = 0
@@ -3135,7 +3145,11 @@ class AnthropicHandlerMixin:
         client = classify_client(headers, default="claude")
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
-        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+        from headroom.proxy.helpers import (
+            _strip_internal_headers,
+            ensure_upstream_auth,
+            log_outbound_headers,
+        )
 
         _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
         headers = _strip_internal_headers(headers)
@@ -3144,6 +3158,7 @@ class AnthropicHandlerMixin:
             stripped_count=_pre_strip_count,
             request_id=None,
         )
+        ensure_upstream_auth(headers, "anthropic")
 
         body = await request.body()
 
@@ -3259,7 +3274,11 @@ class AnthropicHandlerMixin:
         client = classify_client(headers, default="claude")
         tags = extract_tags(headers)
         # PR-A5 (P5-49): strip internal x-headroom-* before forwarding upstream.
-        from headroom.proxy.helpers import _strip_internal_headers, log_outbound_headers
+        from headroom.proxy.helpers import (
+            _strip_internal_headers,
+            ensure_upstream_auth,
+            log_outbound_headers,
+        )
 
         _pre_strip_count = sum(1 for k in headers if k.lower().startswith("x-headroom-"))
         headers = _strip_internal_headers(headers)
@@ -3268,6 +3287,7 @@ class AnthropicHandlerMixin:
             stripped_count=_pre_strip_count,
             request_id=None,
         )
+        ensure_upstream_auth(headers, "anthropic")
 
         response = await self.http_client.get(  # type: ignore[union-attr]
             url,

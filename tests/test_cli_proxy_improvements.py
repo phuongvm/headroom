@@ -15,6 +15,8 @@ Covers:
 from __future__ import annotations
 
 import argparse
+import sys
+import types
 from unittest.mock import patch
 
 import pytest
@@ -35,14 +37,36 @@ def runner() -> CliRunner:
 @pytest.fixture
 def mock_run_server():
     """Patch run_server to a no-op and capture the ProxyConfig passed to it."""
+    from headroom.proxy.models import ProxyConfig
+
     captured: dict = {}
 
     def _mock(config, **kwargs):
         captured["config"] = config
         captured["kwargs"] = kwargs
 
-    with patch("headroom.proxy.server.run_server", _mock):
+    def _parse_csv_tools(raw: str | None) -> list[str]:
+        if not raw:
+            return []
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    fake_server = types.ModuleType("headroom.proxy.server")
+    fake_server.ProxyConfig = ProxyConfig
+    fake_server._parse_csv_tools = _parse_csv_tools
+    fake_server._parse_exclude_tools = lambda raw=None: set(_parse_csv_tools(raw))
+    fake_server._parse_tool_profiles = lambda raw=None: {}
+    fake_server._get_code_aware_banner_status = lambda config: "disabled"
+    fake_server.run_server = _mock
+
+    original = sys.modules.get("headroom.proxy.server")
+    sys.modules["headroom.proxy.server"] = fake_server
+    try:
         yield captured
+    finally:
+        if original is None:
+            sys.modules.pop("headroom.proxy.server", None)
+        else:
+            sys.modules["headroom.proxy.server"] = original
 
 
 class TestLearnNoLearnConflict:
@@ -402,6 +426,39 @@ class TestNewEnvVarWiring:
         )
         assert result.exit_code == 0, result.output
         assert mock_run_server["config"].memory_top_k == 20
+
+    def test_headroom_memory_backend_from_env(
+        self, runner: CliRunner, mock_run_server: dict
+    ) -> None:
+        result = runner.invoke(
+            main,
+            ["proxy", "--memory"],
+            env={"HEADROOM_MEMORY_BACKEND": "qdrant-neo4j"},
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        assert mock_run_server["config"].memory_backend == "qdrant-neo4j"
+
+    def test_headroom_neo4j_memory_config_from_env(
+        self, runner: CliRunner, mock_run_server: dict
+    ) -> None:
+        result = runner.invoke(
+            main,
+            ["proxy", "--memory"],
+            env={
+                "HEADROOM_MEMORY_BACKEND": "qdrant-neo4j",
+                "HEADROOM_NEO4J_URI": "neo4j://neo4j:7687",
+                "HEADROOM_NEO4J_USER": "headroom",
+                "HEADROOM_NEO4J_PASSWORD": "secret",
+            },
+            catch_exceptions=False,
+        )
+        assert result.exit_code == 0, result.output
+        config = mock_run_server["config"]
+        assert config.memory_backend == "qdrant-neo4j"
+        assert config.memory_neo4j_uri == "neo4j://neo4j:7687"
+        assert config.memory_neo4j_user == "headroom"
+        assert config.memory_neo4j_password == "secret"
 
 
 class TestHelpTextCompleteness:

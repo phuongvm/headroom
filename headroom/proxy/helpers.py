@@ -1599,6 +1599,29 @@ def _strip_internal_headers(headers: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in headers.items() if not k.lower().startswith(_INTERNAL_HEADER_PREFIX)}
 
 
+def _has_header(headers: dict[str, str], name: str) -> bool:
+    expected = name.lower()
+    return any(key.lower() == expected for key in headers)
+
+
+def ensure_upstream_auth(headers: dict[str, str], provider: str) -> None:
+    """Inject provider auth from env into upstream-bound headers when absent."""
+
+    normalized_provider = provider.lower()
+    if normalized_provider == "openai":
+        if not _has_header(headers, "authorization"):
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        return
+
+    if normalized_provider == "anthropic":
+        if not _has_header(headers, "x-api-key"):
+            api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            if api_key:
+                headers["x-api-key"] = api_key
+
+
 def log_outbound_headers(
     *,
     forwarder: str,
