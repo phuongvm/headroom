@@ -2244,7 +2244,6 @@ class OpenAIHandlerMixin:
         # upstream-bound copy.
         from headroom.proxy.helpers import (
             _strip_internal_headers,
-            ensure_upstream_auth,
             log_outbound_headers,
         )
 
@@ -3752,7 +3751,6 @@ class OpenAIHandlerMixin:
         # `request.headers` below.
         from headroom.proxy.helpers import (
             _strip_internal_headers,
-            ensure_upstream_auth,
             log_outbound_headers,
         )
 
@@ -3771,7 +3769,6 @@ class OpenAIHandlerMixin:
             stripped_count=_pre_strip_count_resp,
             request_id=request_id,
         )
-        ensure_upstream_auth(headers, "openai")
 
         # PR-A6 (P5-50, preps P0-6): session-sticky `OpenAI-Beta` merge
         # for /v1/responses. Compute a session_id off the same store the
@@ -7408,7 +7405,6 @@ class OpenAIHandlerMixin:
             stripped_count=_pre_strip_count_pt,
             request_id=None,
         )
-        ensure_upstream_auth(headers, "openai")
 
         from starlette.requests import ClientDisconnect
 
@@ -7583,7 +7579,6 @@ class OpenAIHandlerMixin:
 
         from headroom.proxy.helpers import (
             _strip_internal_headers,
-            ensure_upstream_auth,
             log_outbound_headers,
         )
 
@@ -7594,7 +7589,6 @@ class OpenAIHandlerMixin:
             stripped_count=_pre_strip_count_pt,
             request_id=None,
         )
-        ensure_upstream_auth(headers, provider)
 
         from starlette.requests import ClientDisconnect
 

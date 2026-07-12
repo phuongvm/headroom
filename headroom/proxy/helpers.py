@@ -1518,68 +1518,6 @@ def _has_header(headers: dict[str, str], name: str) -> bool:
     return any(key.lower() == expected for key in headers)
 
 
-def ensure_upstream_auth(headers: dict[str, str], provider: str) -> None:
-    """Inject provider auth from env into upstream-bound headers when absent or matching proxy token."""
-
-    normalized_provider = provider.lower()
-    proxy_token = os.environ.get("HEADROOM_PROXY_TOKEN", "").strip()
-
-    if normalized_provider == "openai":
-        existing_auth_key = next((k for k in headers if k.lower() == "authorization"), None)
-        existing_auth = headers.get(existing_auth_key, "") if existing_auth_key else ""
-        existing_bearer = (
-            existing_auth[7:].strip()
-            if existing_auth.lower().startswith("bearer ")
-            else ""
-        )
-
-        needs_injection = (
-            not existing_auth_key
-            or (proxy_token and existing_bearer == proxy_token)
-        )
-
-        if needs_injection:
-            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-            if api_key:
-                if existing_auth_key:
-                    headers.pop(existing_auth_key, None)
-                headers["Authorization"] = f"Bearer {api_key}"
-        return
-
-    if normalized_provider == "anthropic":
-        anthropic_target = os.environ.get("ANTHROPIC_TARGET_API_URL", "").strip()
-        is_rerouted = anthropic_target and "api.anthropic.com" not in anthropic_target
-
-        if is_rerouted:
-            # Rerouted to 9router/OpenAI-compatible endpoint -> use Bearer auth
-            existing_auth_key = next((k for k in headers if k.lower() == "authorization"), None)
-            existing_auth = headers.get(existing_auth_key, "") if existing_auth_key else ""
-            existing_bearer = (
-                existing_auth[7:].strip()
-                if existing_auth.lower().startswith("bearer ")
-                else ""
-            )
-
-            needs_injection = (
-                not existing_auth_key
-                or (proxy_token and existing_bearer == proxy_token)
-            )
-
-            if needs_injection:
-                api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-                if api_key:
-                    if existing_auth_key:
-                        headers.pop(existing_auth_key, None)
-                    headers["Authorization"] = f"Bearer {api_key}"
-            # Also remove any x-api-key that might confuse the upstream
-            headers.pop("x-api-key", None)
-        else:
-            # Standard Anthropic endpoint -> use x-api-key
-            if not _has_header(headers, "x-api-key"):
-                api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-                if api_key:
-                    headers["x-api-key"] = api_key
-
 
 def log_outbound_headers(
     *,

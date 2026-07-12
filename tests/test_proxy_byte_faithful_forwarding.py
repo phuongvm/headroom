@@ -937,6 +937,114 @@ def test_openai_chat_memory_disabled_mode_no_op(
     assert sent["messages"][1]["content"] == "hi"
 
 
+def test_openai_chat_no_auth_does_not_inject_env_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP data-plane keeps no-auth local gateway calls unauthenticated."""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-should-not-forward")
+    config = ProxyConfig(
+        optimize=False,
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        cost_tracking_enabled=False,
+        log_requests=False,
+        ccr_inject_tool=False,
+        ccr_handle_responses=False,
+        ccr_context_tracking=False,
+        image_optimize=False,
+    )
+    app = create_app(config)
+    proxy = app.state.proxy
+    captured: dict[str, object] = {}
+
+    async def _fake_retry(method, url, headers, body, stream=False, **kwargs):  # noqa: ANN001
+        captured["headers"] = dict(headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl_noauth",
+                "object": "chat.completion",
+                "model": "gpt-4o",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1, "total_tokens": 6},
+            },
+        )
+
+    proxy._retry_request = _fake_retry
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    headers = {str(k).lower(): str(v) for k, v in captured["headers"].items()}  # type: ignore[union-attr]
+    assert "authorization" not in headers
+    assert "sk-env-should-not-forward" not in repr(captured["headers"])
+
+
+def test_anthropic_messages_no_auth_does_not_inject_env_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anthropic-compatible HTTP data-plane also stays auth-pass-through."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env-should-not-forward")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env-should-not-forward")
+    config = ProxyConfig(
+        optimize=False,
+        cache_enabled=False,
+        rate_limit_enabled=False,
+        cost_tracking_enabled=False,
+        log_requests=False,
+        ccr_inject_tool=False,
+        ccr_handle_responses=False,
+        ccr_context_tracking=False,
+        image_optimize=False,
+    )
+    app = create_app(config)
+    captured: dict[str, object] = {}
+
+    async def _handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_noauth",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-test",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 5, "output_tokens": 1},
+            },
+        )
+
+    app.state.proxy.http_client = httpx.AsyncClient(transport=httpx.MockTransport(_handler))
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "claude-test",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+
+    assert resp.status_code == 200
+    headers = {str(k).lower(): str(v) for k, v in captured["headers"].items()}  # type: ignore[union-attr]
+    assert "authorization" not in headers
+    assert "x-api-key" not in headers
+    assert "should-not-forward" not in repr(captured["headers"])
+
+
 # ---------------------------------------------------------------------------
 # Streaming forwarder byte-faithfulness
 # ---------------------------------------------------------------------------
