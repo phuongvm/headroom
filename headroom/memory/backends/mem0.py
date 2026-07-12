@@ -12,7 +12,10 @@ Supports both local mode (embedded services) and cloud mode (Mem0 API).
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -20,6 +23,16 @@ from typing import Any
 from headroom.memory import qdrant_env
 from headroom.memory.models import Memory
 from headroom.memory.ports import MemoryFilter, VectorFilter, VectorSearchResult
+
+logging.getLogger("mem0.utils.spacy_models").setLevel(logging.ERROR)
+logging.getLogger("mem0.vector_stores.qdrant").setLevel(logging.ERROR)
+logging.getLogger("posthog").setLevel(logging.ERROR)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Api key is used with an insecure connection.*",
+    category=UserWarning,
+)
 
 
 @dataclass
@@ -68,8 +81,18 @@ class Mem0Config:
     qdrant_grpc_port: int = field(default_factory=qdrant_env.qdrant_env_grpc_port)
 
     # Common settings
-    llm_model: str = "gpt-4o-mini"  # For entity extraction
-    embedder_model: str = "text-embedding-3-small"
+    llm_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "HEADROOM_MEM0_LLM_MODEL",
+            "cb-nemotron-120b",
+        )
+    )
+    embedder_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "HEADROOM_MEM0_EMBEDDER_MODEL",
+            "openrouter/google/gemini-embedding-001",
+        )
+    )
     enable_graph: bool = True  # Set to False to disable graph storage (vector-only)
 
     # Collection settings

@@ -50,7 +50,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import os
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -60,6 +62,16 @@ from headroom.memory.models import Memory
 from headroom.memory.ports import MemorySearchResult
 
 logger = logging.getLogger(__name__)
+
+logging.getLogger("mem0.utils.spacy_models").setLevel(logging.ERROR)
+logging.getLogger("mem0.vector_stores.qdrant").setLevel(logging.ERROR)
+logging.getLogger("posthog").setLevel(logging.ERROR)
+
+warnings.filterwarnings(
+    "ignore",
+    message=r"Api key is used with an insecure connection.*",
+    category=UserWarning,
+)
 
 
 def _utcnow() -> datetime:
@@ -111,7 +123,18 @@ class Mem0Config:
     qdrant_grpc_port: int = field(default_factory=qdrant_env.qdrant_env_grpc_port)
 
     # Embedding settings
-    embedder_model: str = "text-embedding-3-small"
+    embedder_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "HEADROOM_MEM0_EMBEDDER_MODEL",
+            "openrouter/google/gemini-embedding-001",
+        )
+    )
+    llm_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "HEADROOM_MEM0_LLM_MODEL",
+            "cb-nemotron-120b",
+        )
+    )
 
     # Collection settings
     collection_name: str = "headroom_memories"
@@ -229,7 +252,7 @@ class DirectMem0Adapter:
                 },
                 "llm": {
                     "provider": "openai",
-                    "config": {"model": "gpt-4o-mini"},
+                    "config": {"model": self._config.llm_model},
                 },
                 "embedder": {
                     "provider": "openai",

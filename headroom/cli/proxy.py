@@ -950,6 +950,29 @@ def proxy(
     Usage with OpenAI-compatible clients:
         OPENAI_BASE_URL=http://localhost:8787/v1 your-app
     """
+    # Quiet onnxruntime import to suppress WSL/Docker vgem GPU discovery warning
+    try:
+        import importlib as _importlib
+        import os as _os
+        import sys as _sys
+        if "onnxruntime" not in _sys.modules:
+            _old_stderr = _os.dup(2)
+            _devnull = _os.open(_os.devnull, _os.O_WRONLY)
+            try:
+                _os.dup2(_devnull, 2)
+                _importlib.import_module("onnxruntime")
+            finally:
+                _os.dup2(_old_stderr, 2)
+                _os.close(_old_stderr)
+                _os.close(_devnull)
+        
+        # Suppress LiteLLM provider list spam
+        import litellm
+        litellm.suppress_debug_info = True
+        setattr(litellm, "set_verbose", False)
+    except Exception:
+        pass
+
     # Import here to avoid slow startup
     try:
         from headroom.proxy.server import (

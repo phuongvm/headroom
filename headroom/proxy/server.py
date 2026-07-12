@@ -2557,11 +2557,13 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
 
     def _extract_proxy_token(headers) -> str | None:
+        raw = headers.get("x-headroom-proxy-token")
+        if raw:
+            return str(raw)
         auth = str(headers.get("authorization") or "")
         if auth.lower().startswith("bearer "):
             return auth[7:].strip() or None
-        raw = headers.get("x-headroom-proxy-token")
-        return str(raw) if raw else None
+        return None
 
     @app.middleware("http")
     async def _security_gate(request, call_next):
@@ -4015,8 +4017,19 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             "data": retrieval_data,
         }
 
-    # Compression-only endpoint (for TypeScript SDK and other HTTP clients)
-    @app.post("/v1/compress", dependencies=[Depends(_require_loopback)])
+    # Compression-only endpoint (for TypeScript SDK and other HTTP clients).
+    # When HEADROOM_ALLOW_REMOTE_COMPRESS is set, skip the loopback guard so
+    # external consumers (e.g. 9Router on the same Docker network) can call
+    # /v1/compress directly. The proxy token gate (_security_gate) still
+    # applies when configured; network-level isolation (Docker bridge + VPN)
+    # provides the trust boundary in deployments that disable both guards.
+    _compress_deps = (
+        []
+        if os.environ.get("HEADROOM_ALLOW_REMOTE_COMPRESS")
+        else [Depends(_require_loopback)]
+    )
+
+    @app.post("/v1/compress", dependencies=_compress_deps)
     async def compress_messages(request: Request):
         return await proxy.handle_compress(request)
 
