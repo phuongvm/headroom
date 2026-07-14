@@ -258,12 +258,17 @@ This avoids relying on generic GitHub or Copilot CLI tokens that can read
 Copilot account metadata but may still be rejected by Copilot's token-exchange
 endpoint.
 
-For GitHub Enterprise Server or custom-domain Copilot deployments, set the
-deployment domain before launching:
+For GitHub Enterprise Server or custom-domain Copilot deployments, set one of
+these before launching:
 
 ```bash
 export GITHUB_COPILOT_ENTERPRISE_DOMAIN=ghe.example.com
+# or
+export GITHUB_COPILOT_ENTERPRISE_URL=https://ghe.example.com
 ```
+
+Both variables are supported. If both are set,
+`GITHUB_COPILOT_ENTERPRISE_URL` takes precedence.
 
 For GitHub.com Enterprise Cloud URLs such as
 `github.com/enterprises/your-enterprise`, do not set an enterprise-domain
