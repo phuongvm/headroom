@@ -647,8 +647,42 @@ def _start_proxy(
         stdio_log_file.close()
 
 
+def _rtk_opt_in() -> bool:
+    """Whether RTK CLI-command filtering was explicitly enabled.
+
+    RTK is opt-in (off by default): turn it on with ``--rtk`` (which sets
+    ``HEADROOM_RTK=1``) or by exporting ``HEADROOM_RTK=1``. ``--no-rtk`` remains
+    accepted as a deprecated no-op.
+    """
+    return os.environ.get("HEADROOM_RTK", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _rtk_flag_callback(ctx: Any, param: Any, value: bool) -> bool:
+    """Click eager callback: ``--rtk`` sets HEADROOM_RTK so the central RTK gate
+    (:func:`_rtk_opt_in`) sees the opt-in without threading a param through every
+    wrap subcommand."""
+    if value:
+        os.environ["HEADROOM_RTK"] = "1"
+    return value
+
+
+# Shared opt-in flag applied to every ``wrap`` subcommand. ``expose_value=False``
+# so no subcommand signature changes; it works purely through HEADROOM_RTK.
+_rtk_option = click.option(
+    "--rtk",
+    is_flag=True,
+    default=False,
+    expose_value=False,
+    is_eager=True,
+    callback=_rtk_flag_callback,
+    help="Enable RTK CLI-command filtering (opt-in; off by default). Also enabled by HEADROOM_RTK=1.",
+)
+
+
 def _setup_rtk(verbose: bool = False) -> Path | None:
     """Ensure rtk is installed and hooks are registered."""
+    if not _rtk_opt_in():
+        return None
     from headroom.rtk import get_rtk_path
     from headroom.rtk.installer import ensure_rtk, register_claude_hooks
 
@@ -2123,6 +2157,8 @@ def _snapshot_codex_config_if_unwrapped(config_file: Path, backup_file: Path) ->
 
 def _ensure_rtk_binary(verbose: bool = False) -> Path | None:
     """Ensure rtk binary is installed (download if needed). No hook registration."""
+    if not _rtk_opt_in():
+        return None
     from headroom.rtk import get_rtk_path
     from headroom.rtk.installer import ensure_rtk
 
@@ -2693,6 +2729,8 @@ def _inject_rtk_instructions(file_path: Path, verbose: bool = False) -> bool:
     Idempotent — skips if marker already present. Appends to existing content.
     Returns True if instructions were written.
     """
+    if not _rtk_opt_in():
+        return False
     if file_path.exists():
         existing = _read_text(file_path)
         if _RTK_MARKER in existing:
@@ -4396,6 +4434,7 @@ def wrap_selfheal(marker: str | None) -> None:
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     # no "-p" short alias here: claude's own -p/--print must fall through to CLAUDE_ARGS
     "--port",
@@ -4523,7 +4562,12 @@ def claude(
         headroom wrap claude --no-serena        # Never register the Serena backup
         headroom wrap claude --1m               # Preserve the 1M context window
     """
-    setup_context_tool = context_tool and not no_rtk
+    # RTK/context-tool is opt-in (off by default): --context-tool (legacy) and
+    # --rtk both enable it. Mirror --context-tool into HEADROOM_RTK so the central
+    # RTK gate (_rtk_opt_in) fires for the legacy flag too.
+    if context_tool:
+        os.environ["HEADROOM_RTK"] = "1"
+    setup_context_tool = (context_tool or _rtk_opt_in()) and not no_rtk
     if prepare_only:
         if setup_context_tool:
             if _selected_context_tool() == _CONTEXT_TOOL_LEAN_CTX:
@@ -4936,6 +4980,7 @@ def unwrap_claude(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -5459,6 +5504,7 @@ def _run_codex_wrap(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -5577,6 +5623,7 @@ def codex(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -5681,6 +5728,7 @@ def aider(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option("--port", "-p", default=8787, type=int, help="Proxy port (default: 8787)")
 @click.option(
     "--no-context-tool",
@@ -5783,6 +5831,7 @@ def openclaude(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -5862,6 +5911,7 @@ def vibe(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -5949,6 +5999,7 @@ def kimi(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6092,6 +6143,7 @@ def grok(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6198,6 +6250,7 @@ def cursor(
 
 
 @wrap.command("grok-build", context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6294,6 +6347,7 @@ def grok_build(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6396,6 +6450,7 @@ def cline(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6491,6 +6546,7 @@ def zcode(
 
 
 @wrap.command("continue", context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6615,6 +6671,7 @@ def continue_dev(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6740,6 +6797,7 @@ def goose(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -6883,6 +6941,7 @@ def openhands(
 
 
 @wrap.command("openclaw")
+@_rtk_option
 @click.option(
     "--plugin-path",
     type=click.Path(path_type=Path, file_okay=False, dir_okay=True),
@@ -7124,6 +7183,7 @@ def openclaw(
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )
@@ -7648,6 +7708,7 @@ def unwrap_codex(port: int, no_stop_proxy: bool) -> None:
 
 
 @wrap.command(context_settings={"ignore_unknown_options": True})
+@_rtk_option
 @click.option(
     "--port", "-p", default=8787, type=click.IntRange(1, 65535), help="Proxy port (default: 8787)"
 )

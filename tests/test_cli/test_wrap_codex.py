@@ -470,6 +470,7 @@ class TestInjectAndRestoreRoundTrip:
         """`wrap codex` injects the rtk block into the Codex global AGENTS.md;
         `unwrap codex` must take it back out (regression for #1421)."""
         _set_test_home(monkeypatch, tmp_path)
+        monkeypatch.setenv("HEADROOM_RTK", "1")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         agents = codex_home / "AGENTS.md"
@@ -487,6 +488,7 @@ class TestInjectAndRestoreRoundTrip:
         """Only the marker-fenced rtk block is removed; the user's own AGENTS.md
         prose survives the unwrap."""
         _set_test_home(monkeypatch, tmp_path)
+        monkeypatch.setenv("HEADROOM_RTK", "1")
         codex_home = tmp_path / ".codex"
         codex_home.mkdir()
         agents = codex_home / "AGENTS.md"
@@ -1275,6 +1277,7 @@ def test_wrap_codex_injects_rtk_globally_without_changing_project_agents(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _set_test_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("HEADROOM_RTK", "1")
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     project_agents = project_dir / "AGENTS.md"
@@ -1308,6 +1311,7 @@ def test_wrap_codex_launch_injects_rtk_globally_without_changing_project_agents(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     _set_test_home(monkeypatch, tmp_path)
+    monkeypatch.setenv("HEADROOM_RTK", "1")
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     project_agents = project_dir / "AGENTS.md"
