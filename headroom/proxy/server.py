@@ -1708,14 +1708,16 @@ class HeadroomProxy(
                 self.warmup.merge_transform_status(transform_status)
 
         # Update internal status from eager loading results
-        if eager_status.get("kompress") == "enabled":
-            self._kompress_status = "enabled"
+        if eager_status.get("kompress") in {"enabled", "deferred"}:
+            self._kompress_status = eager_status["kompress"]
         if eager_status.get("code_aware") == "enabled":
             self._code_aware_status = "enabled"
 
         # Log component status
         if self._kompress_status == "enabled":
             logger.info("Kompress: ENABLED (ModernBERT token compressor)")
+        elif self._kompress_status == "deferred":
+            logger.info("Kompress: DEFERRED (model loads on first request)")
         elif self.config.optimize:
             logger.info("Kompress: not installed (pip install headroom-ai[ml] for ML compression)")
 
@@ -1897,6 +1899,10 @@ class HeadroomProxy(
         logger.info(f"Input tokens:          {m.tokens_input_total:,}")
         logger.info(f"Output tokens:         {m.tokens_output_total:,}")
         logger.info(f"Tokens saved:          {m.tokens_saved_total:,}")
+        if m.tool_search_saved_total > 0:
+            # Tool-schema deferral / turn-hook tool shrink — counted apart from
+            # message compression (tool bytes never move tok_before/after).
+            logger.info(f"Tool schemas deferred: {m.tool_search_saved_total:,}")
         # Active-compression ratio: savings as a fraction of what we
         # *attempted* to compress (extracted units + tool schema),
         # NOT the whole request. The full-request denominator is
@@ -1936,7 +1942,18 @@ class HeadroomProxy(
         """
         from headroom.proxy.outcome import emit_request_outcome
 
-        await emit_request_outcome(self, outcome)
+        # Shielded because four call sites are `finally:` blocks inside streaming
+        # async generators (streaming.py:1611, :1859, :2069, openai.py:8614). A
+        # client disconnect cancels that task, and the funnel now suspends partway
+        # through: `record_request` commits the Prometheus counters, then awaits
+        # the ledger append in a worker thread. A cancellation landing on that
+        # await leaves the request counted in Prometheus but missing from the cost
+        # tracker, the request log, and the PERF line `headroom perf` reads.
+        #
+        # The shield does not swallow the cancellation — the await below still
+        # raises CancelledError, so generator teardown propagates exactly as
+        # before. It only keeps the bookkeeping from being torn in half.
+        await asyncio.shield(emit_request_outcome(self, outcome))
 
     async def _next_request_id(self) -> str:
         """Generate unique request ID."""
@@ -2615,6 +2632,21 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 return True
             proxy.warmup.kompress.mark_loaded(handle=compressor, backend=backend)
             return True
+
+        try:
+            from headroom.transforms.kompress_compressor import HF_MODEL_ID, _kompress_cache
+        except ImportError:
+            return True
+
+        cached = _kompress_cache.get(HF_MODEL_ID)
+        if cached is not None:
+            try:
+                model, _tokenizer, backend = cached
+            except (TypeError, ValueError):
+                pass
+            else:
+                if backend and proxy.warmup.kompress.status != "loaded":
+                    proxy.warmup.kompress.mark_loaded(handle=model, backend=backend)
         return True
 
     def _health_checks() -> dict[str, dict[str, Any]]:
@@ -3638,7 +3670,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         # compression and the configured context tool both remove tokens before
         # they reach model context, so dashboard-facing savings combines them.
         proxy_compression_tokens = m.tokens_saved_total
-        all_layers_tokens_saved = proxy_compression_tokens + cli_tokens_avoided
+        # "All layers" must include tool-schema deferral (the tool_search layer
+        # enumerated in by_layer below) — otherwise the advertised total omits it.
+        all_layers_tokens_saved = (
+            proxy_compression_tokens + cli_tokens_avoided + m.tool_search_saved_total
+        )
         total_tokens_before = m.tokens_input_total + all_layers_tokens_saved
         proxy_total_before_compression = m.tokens_input_total + proxy_compression_tokens
         # `attempted_input_tokens` is the compressible-only denominator
@@ -4854,18 +4890,20 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         }
 
     # Compression-only endpoint (for TypeScript SDK and other HTTP clients).
-    # When HEADROOM_ALLOW_REMOTE_COMPRESS is set, skip the loopback guard so
-    # external consumers (e.g. 9Router on the same Docker network) can call
-    # /v1/compress directly. The proxy token gate (_security_gate) still
-    # applies when configured; network-level isolation (Docker bridge + VPN)
-    # provides the trust boundary in deployments that disable both guards.
-    _compress_deps = (
+    # Loopback-only by default (guard added in #1537). An operator can opt in to
+    # network access for an authorized in-network sidecar/gateway (e.g. Kong,
+    # LiteLLM) on a trusted network by setting HEADROOM_COMPRESS_ALLOW_REMOTE=1,
+    # which drops ONLY this route's loopback dependency. Inbound auth
+    # (HEADROOM_PROXY_TOKEN via _security_gate) and network scoping still apply;
+    # all other _require_loopback routes are unaffected. Unset/false preserves
+    # today's loopback-only behavior.
+    _compress_dependencies = (
         []
-        if os.environ.get("HEADROOM_ALLOW_REMOTE_COMPRESS")
+        if _get_env_bool("HEADROOM_COMPRESS_ALLOW_REMOTE", False)
         else [Depends(_require_loopback)]
     )
 
-    @app.post("/v1/compress", dependencies=_compress_deps)
+    @app.post("/v1/compress", dependencies=_compress_dependencies)
     async def compress_messages(request: Request):
         return await proxy.handle_compress(request)
 

@@ -78,6 +78,7 @@ from .content_detector import (
 )
 from .content_detector import detect_content_type as _regex_detect_content_type
 from .error_detection import content_has_strong_error_indicators
+from .lossless_provider import get_lossless_provider
 from .mixed_content import ContentSection, mixed_content_indicators
 from .relevance_split import build_relevance_query, plan_relevance_split
 
@@ -91,6 +92,7 @@ split_into_sections = _mixed_content.split_into_sections
 _detect_backend_warned = False
 _detect_panic_warned = False
 _detect_native_unhealthy = False  # circuit breaker: native detect hung once (#575)
+_detect_native_verified = False  # native detect has returned once -> skip the watchdog
 
 
 # Shared calibrated fallback estimator (tiktoken cl100k_base ~90% accuracy,
@@ -870,6 +872,7 @@ def _detect_content(content: str) -> DetectionResult:
     `_strategy_from_detection` keys off that field alone.
     """
     global _detect_backend_warned, _detect_panic_warned, _detect_native_unhealthy
+    global _detect_native_verified
 
     # Detect on the unwrapped payload so a tool-output envelope's tags don't get
     # the whole result misclassified as HTML/XML (#route-converter corruption).
@@ -895,14 +898,19 @@ def _detect_content(content: str) -> DetectionResult:
     from headroom._core import detect_content_type as _rust_detect
 
     try:
-        if sys.platform == "win32":
-            # Windows is the only platform where the native detector can deadlock
-            # on first use (#575); bound it with a watchdog so a hang degrades to
-            # the pure-Python detector below. Elsewhere it is the trusted default
-            # hot path — call it directly, with no per-call thread overhead.
+        # The native detector can deadlock on FIRST use (#575 — seen on Windows
+        # and macOS/arm64). Bound it with a watchdog so a hang degrades to the
+        # pure-Python detector; the previous win32-only guard left other
+        # platforms unprotected, so a hung Linux sidecar silently stopped
+        # compressing (every request failed open to passthrough). Watchdog until
+        # the native detector has returned once, then use the direct fast path —
+        # the hang is first-use only, so steady state pays no per-call thread
+        # overhead. win32 keeps watchdogging every call (unchanged).
+        if sys.platform == "win32" or not _detect_native_verified:
             rust_result = _rust_detect_watchdogged(_rust_detect, content, _detect_timeout_secs())
         else:
             rust_result = _rust_detect(content)
+        _detect_native_verified = True  # returned without hanging -> trusted hot path
         # Rust's `content_type` is the lowercase string tag (e.g.
         # "json_array"); translate to the Python `ContentType` enum so
         # downstream mapping keys match.
@@ -5187,7 +5195,20 @@ class ContentRouter(Transform):
         Always safe to run (information-preserving) so there is no feature gate.
         Never raises.
         """
-        if not isinstance(content, str) or len(content) < 200:
+        if not isinstance(content, str):
+            return None
+        provider = get_lossless_provider()
+        if provider is not None:
+            try:
+                # A registered provider is authoritative for excluded-tool
+                # compaction; fall back to the built-in folds only if it raises.
+                return provider(content)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "lossless provider failed; using built-in compaction",
+                    exc_info=True,
+                )
+        if len(content) < 200:
             return None
         try:
             from .lossless_compaction import compact_lossless
