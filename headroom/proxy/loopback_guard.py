@@ -171,69 +171,45 @@ def is_ip_literal_host_header(header_value: str | None) -> bool:
 
 
 def require_loopback(request: Request) -> None:  # type: ignore[valid-type]
-    """FastAPI dependency: 404 any non-loopback caller.
-
-    Usage::
-
-        @app.get("/debug/tasks", dependencies=[Depends(require_loopback)])
-        async def debug_tasks() -> list[dict]:
-            ...
-
-    Two gates have to pass:
-
-    1. ``request.client.host`` must be a loopback IP. Stops anyone
-       who actually reaches the listener from outside ``127.0.0.0/8``
-       / ``::1``.
-    2. The inbound ``Host:`` header must also name loopback. Stops
-       DNS-rebinding attacks where a browser sends requests to the
-       loopback IP but the page origin is ``attacker.com`` — the IP
-       check alone passes, but the ``Host:`` header still reads
-       ``attacker.com`` and we reject the request here.
-
-    Returning 404 (not 403) keeps debug endpoints invisible to
-    external scanners — indistinguishable from "no such route".
-    """
+    """FastAPI dependency: 404 any non-loopback caller (unless peer is trusted CIDR)."""
     if HTTPException is None:  # pragma: no cover - defensive
         raise RuntimeError("FastAPI is required for the loopback guard")
 
     client = getattr(request, "client", None)
     host = getattr(client, "host", None) if client is not None else None
-    if not is_loopback_host(host):
-        # No body: minimal FastAPI default, behaves like "no route".
-        raise HTTPException(status_code=404)
+    is_loopback = is_loopback_host(host)
+
+    if not is_loopback:
+        from headroom.proxy.forwarded_headers import (
+            load_trusted_dashboard_client_cidrs,
+            load_trusted_gateway_cidrs,
+            peer_is_trusted_gateway,
+            resolve_client_ip,
+        )
+
+        client_ip = resolve_client_ip(request)
+        trusted_cidrs = load_trusted_gateway_cidrs() + load_trusted_dashboard_client_cidrs()
+        if not (trusted_cidrs and peer_is_trusted_gateway(client_ip, trusted_cidrs)):
+            raise HTTPException(status_code=404)
 
     headers = getattr(request, "headers", None)
     if headers is None:
-        # Manual ``Request`` stub with no ``headers`` attribute — used
-        # by older unit tests that pre-date this gate. Treat the same
-        # way as the IP-only path did and accept.
         return
     try:
         host_header = headers.get("host")
     except AttributeError:
         host_header = None
-    if not is_loopback_host_header(host_header):
-        raise HTTPException(status_code=404)
+
+    if is_loopback:
+        if not is_loopback_host_header(host_header):
+            raise HTTPException(status_code=404)
+    else:
+        if not host_header:
+            raise HTTPException(status_code=404)
 
 
 def require_same_origin(request: Request) -> None:  # type: ignore[valid-type]
-    """FastAPI dependency: reject cross-origin browser requests on mutating routes.
-
-    ``require_loopback``'s Host-header check stops DNS-rebinding, but not a
-    plain CSRF where a remote page's JS targets a known
-    ``http://127.0.0.1:<port>`` URL directly with a non-preflighted "simple"
-    request (e.g. ``Content-Type: text/plain`` carrying a JSON body) -- the
-    browser's ``Host:`` header still reads the real destination (loopback),
-    but its ``Origin:`` header reflects the page's actual origin. CORS alone
-    does not stop this: CORS only blocks the attacker's JS from *reading* the
-    response, not the server from acting on the request.
-
-    Reject when ``Origin`` is present and does not itself name a loopback
-    host, or is the opaque literal ``"null"`` (sandboxed iframe / ``file://``
-    page). Requests with no ``Origin`` header (CLI tools, curl, ``TestClient``,
-    same-origin simple navigations) pass through unchanged -- a real browser
-    always sets ``Origin`` on cross-origin fetch/XHR.
-    """
+    """FastAPI dependency: reject cross-origin browser requests on mutating routes."""
     if HTTPException is None:  # pragma: no cover - defensive
         raise RuntimeError("FastAPI is required for the same-origin guard")
 
@@ -245,4 +221,14 @@ def require_same_origin(request: Request) -> None:  # type: ignore[valid-type]
         raise HTTPException(status_code=403, detail="cross-origin request rejected")
     host_part = origin.split("://", 1)[-1].split("/", 1)[0]
     if not is_loopback_host_header(host_part):
-        raise HTTPException(status_code=403, detail="cross-origin request rejected")
+        from headroom.proxy.forwarded_headers import (
+            load_trusted_dashboard_client_cidrs,
+            load_trusted_gateway_cidrs,
+            peer_is_trusted_gateway,
+            resolve_client_ip,
+        )
+
+        client_ip = resolve_client_ip(request)
+        trusted_cidrs = load_trusted_gateway_cidrs() + load_trusted_dashboard_client_cidrs()
+        if not (trusted_cidrs and peer_is_trusted_gateway(client_ip, trusted_cidrs)):
+            raise HTTPException(status_code=403, detail="cross-origin request rejected")

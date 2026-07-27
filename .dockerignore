@@ -10,6 +10,16 @@
 !.github/plugin/**
 .gitignore
 
+# Rust build artifacts
+target/
+
+# Media & assets
+*.gif
+*.png
+*.jpg
+*.jpeg
+*.mp4
+
 # Python artifacts
 __pycache__
 *.pyc
