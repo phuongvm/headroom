@@ -134,6 +134,16 @@ def _parse_kv(kv_str: str) -> dict[str, str]:
     return result
 
 
+def _decode_perf_savings(value: str) -> list[dict[str, object]]:
+    # Local import keeps the analyzer usable against old logs/install layouts.
+    try:
+        from headroom.proxy.savings_attribution import decode
+
+        return decode(value)
+    except Exception:
+        return []
+
+
 @dataclass
 class PerfRecord:
     """A single parsed PERF log entry."""
@@ -156,6 +166,7 @@ class PerfRecord:
     tokens_out: int = 0
     ttfb_ms: float = 0.0
     stages: dict[str, float] = field(default_factory=dict)
+    savings_breakdown: list[dict[str, object]] = field(default_factory=list)
 
 
 @dataclass
@@ -353,6 +364,7 @@ def parse_log_files(last_n_hours: float = 168.0) -> PerfReport:
                                 tokens_after=int(kv.get("tok_after", 0)),
                                 tokens_saved=int(kv.get("tok_saved", 0)),
                                 tool_saved=int(kv.get("tool_saved", 0)),
+                                savings_breakdown=_decode_perf_savings(kv.get("savings", "none")),
                                 cache_read=int(kv.get("cache_read", 0)),
                                 cache_write=int(kv.get("cache_write", 0)),
                                 cache_hit_pct=int(kv.get("cache_hit_pct", 0)),
@@ -483,16 +495,25 @@ def format_report(report: PerfReport) -> str:
         total_after = sum(r.tokens_after for r in records)
         total_saved = sum(r.tokens_saved for r in records)
         total_tool_saved = sum(r.tool_saved for r in records)
+        total_headline_saved = total_saved + total_tool_saved
         pct = (total_saved / total_before * 100) if total_before > 0 else 0
+        # All-layers denominator: deferred tool schemas were never in tok_before (they
+        # don't reach count_messages), so the pre-Headroom world is tok_before + them.
+        # Same construction the proxy's /api/stats uses for total_before_compression —
+        # the headline number and the headline percent must share a numerator, or the
+        # tile reads "60,920 saved (0.1%)" off two different definitions of saved.
+        headline_before = total_before + total_tool_saved
+        headline_pct = (total_headline_saved / headline_before * 100) if headline_before > 0 else 0
 
         lines.append(f"Requests:     {len(records)}")
-        lines.append(f"Tokens:       {total_before:,} -> {total_after:,} ({pct:.1f}% reduction)")
-        lines.append(f"Total saved:  {total_saved:,} tokens (messages)")
-        # Tool-schema savings (deferral + turn-hook tool shrink) are counted apart
-        # from message compression — messages never include tool bytes — so surface
-        # them explicitly instead of hiding a tool-heavy turn's win behind tok_saved=0.
+        lines.append(f"Tokens:       {total_before:,} -> {total_after:,} ({pct:.1f}% messages)")
+        # ONE headline. Tool-schema deferral can't move tok_before/after (messages never
+        # include tool bytes), so it used to render as a rival "Tool saved" line — which
+        # read as a side metric and hid the win on tool-heavy turns where tok_saved=0.
+        lines.append(f"Tokens saved: {total_headline_saved:,} ({headline_pct:.1f}% reduction)")
         if total_tool_saved > 0:
-            lines.append(f"Tool saved:   {total_tool_saved:,} tokens (tool schemas, deferral)")
+            lines.append(f"  · messages       {max(0, total_saved):,}")
+            lines.append(f"  · tool schemas   {total_tool_saved:,}")
         lines.append("")
 
         # Per-model breakdown with list prices
@@ -743,6 +764,7 @@ PERF_RECORD_FIELDS = [
     "tokens_out",
     "ttfb_ms",
     "stages",
+    "savings_breakdown",
 ]
 
 
@@ -978,6 +1000,7 @@ def build_perf_summary(report: PerfReport) -> dict:
     total_after = sum(r.tokens_after for r in records)
     total_saved = sum(r.tokens_saved for r in records)
     total_tool_saved = sum(r.tool_saved for r in records)
+    total_headline_saved = total_saved + total_tool_saved
 
     total_cr = sum(r.cache_read for r in records)
     total_cw = sum(r.cache_write for r in records)
@@ -991,7 +1014,9 @@ def build_perf_summary(report: PerfReport) -> dict:
     for model, recs in sorted(by_model_groups.items()):
         m_before = sum(r.tokens_before for r in recs)
         m_after = sum(r.tokens_after for r in recs)
-        m_saved = sum(r.tokens_saved for r in recs)
+        m_message_saved = sum(r.tokens_saved for r in recs)
+        m_tool_saved = sum(r.tool_saved for r in recs)
+        m_saved = m_message_saved + m_tool_saved
         by_model.append(
             {
                 "model": model,
@@ -999,7 +1024,9 @@ def build_perf_summary(report: PerfReport) -> dict:
                 "tokens_before": m_before,
                 "tokens_after": m_after,
                 "tokens_saved": m_saved,
-                "savings_pct": _pct(m_saved, m_before),
+                "message_tokens_saved": m_message_saved,
+                "tool_tokens_saved": m_tool_saved,
+                "savings_pct": _pct(m_saved, m_before + m_tool_saved),
                 "list_price_per_mtok": _get_list_price(model),
             }
         )
@@ -1023,6 +1050,37 @@ def build_perf_summary(report: PerfReport) -> dict:
             }
         )
 
+    by_source_groups: dict[tuple[str, bool], dict[str, int | float | str | bool]] = {}
+    for record in records:
+        for item in record.savings_breakdown:
+            source = str(item.get("source") or "other")
+            realized = bool(item.get("realized", True))
+            key = (source, realized)
+            row = by_source_groups.setdefault(
+                key,
+                {
+                    "source": source,
+                    "realized": realized,
+                    "events": 0,
+                    "tokens": 0,
+                    "usd": 0.0,
+                },
+            )
+            row["events"] = int(row["events"]) + 1
+            raw_tokens = item.get("tokens", 0)
+            raw_usd = item.get("usd", 0.0)
+            tokens = int(raw_tokens) if isinstance(raw_tokens, (str, int, float)) else 0
+            usd = float(raw_usd) if isinstance(raw_usd, (str, int, float)) else 0.0
+            row["tokens"] = int(row["tokens"]) + max(0, tokens)
+            row["usd"] = round(
+                float(row["usd"]) + usd,
+                12,
+            )
+    by_source = sorted(
+        by_source_groups.values(),
+        key=lambda row: (-int(row["tokens"]), str(row["source"])),
+    )
+
     return {
         "window_hours": report.requested_hours,
         "actual_window": {
@@ -1033,6 +1091,11 @@ def build_perf_summary(report: PerfReport) -> dict:
         "total_requests": len(records),
         "total_tokens_before": total_before,
         "total_tokens_after": total_after,
+        # total_tokens_saved is the headline (messages + tool-schema deferral); the two
+        # components stay for consumers that break the number down. See
+        # headroom.proxy.tool_schema_savings_policy.
+        "total_tokens_saved": total_headline_saved,
+        "total_savings_pct": _pct(total_headline_saved, total_before + total_tool_saved),
         "tokens_saved": total_saved,
         "tool_saved": total_tool_saved,
         "savings_pct": _pct(total_saved, total_before),
@@ -1041,6 +1104,7 @@ def build_perf_summary(report: PerfReport) -> dict:
         "cache_hit_pct": cache_hit_pct,
         "by_model": by_model,
         "by_transform": by_transform,
+        "by_source": by_source,
         "overhead": build_overhead_summary(report),
         "throughput": calculate_throughput(report),
         "log_files_read": report.log_files_read,
