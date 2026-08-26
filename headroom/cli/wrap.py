@@ -136,7 +136,12 @@ from headroom.providers.copilot import (
     validate_configuration as _validate_copilot_configuration,
 )
 from headroom.providers.cursor import render_setup_lines as _render_cursor_setup_lines
-from headroom.providers.grok import build_launch_env as _build_grok_launch_env
+from headroom.providers.grok import (
+    DEFAULT_API_URL as _GROK_DEFAULT_API_URL,
+)
+from headroom.providers.grok import (
+    build_launch_env as _build_grok_launch_env,
+)
 from headroom.providers.grok_build import render_setup_lines as _render_grok_build_setup_lines
 from headroom.providers.grok_build.config import (
     inject_grok_provider_config,
@@ -316,9 +321,13 @@ _AGENT_SAVINGS_WRAP_AGENTS = {"claude", "codex", "cursor", "grok", "grok_build"}
 # so `--1m` forces the suffix via ANTHROPIC_MODEL on the launched process.
 _ANTHROPIC_MODEL_ENV = "ANTHROPIC_MODEL"
 _CONTEXT_1M_SUFFIX = "[1m]"
-# Only used when no model is otherwise selected (no ANTHROPIC_MODEL set). The
-# current default Opus; the suffix logic preserves any model the user did set.
-_DEFAULT_1M_MODEL = "claude-opus-4-8"
+_1M_MODEL_ENV = "HEADROOM_1M_MODEL"
+# Fallback model for `--1m` when nothing else selects one (no ANTHROPIC_MODEL,
+# no explicit --model). Overridable via HEADROOM_1M_MODEL so it can track new
+# Opus releases without a code change and without pinning ANTHROPIC_MODEL
+# globally (which would also change non-`--1m` sessions and override Claude
+# Code's /model picker). #2937.
+_DEFAULT_1M_MODEL = "claude-opus-5"
 _OPENCLAUDE_INSTRUCTIONS_FILE = "CONVENTIONS.md"
 
 
@@ -326,11 +335,12 @@ def _resolve_1m_model(current: str | None) -> str:
     """Return the model id that makes Claude Code request the 1M window (#1158).
 
     Preserves a model the user already selected via ``ANTHROPIC_MODEL`` (only
-    appending the ``[1m]`` suffix when missing); falls back to the default Opus
-    when none is set. Idempotent — a value already ending in ``[1m]`` is
-    returned unchanged.
+    appending the ``[1m]`` suffix when missing). When none is set it falls back
+    to ``HEADROOM_1M_MODEL`` if defined, else the built-in default Opus (#2937).
+    Idempotent — a value already ending in ``[1m]`` is returned unchanged.
     """
-    base = (current or "").strip() or _DEFAULT_1M_MODEL
+    fallback = (os.environ.get(_1M_MODEL_ENV) or "").strip() or _DEFAULT_1M_MODEL
+    base = (current or "").strip() or fallback
     return base if base.endswith(_CONTEXT_1M_SUFFIX) else f"{base}{_CONTEXT_1M_SUFFIX}"
 
 
@@ -1806,6 +1816,40 @@ def _serena_project_skip_reason(root: Path) -> str | None:
 #: Upper bound on the synchronous pre-index. The agent does not launch until
 #: this call returns, so the number is a stall budget, not just a safety net.
 _SERENA_INDEX_TIMEOUT = 300
+_SERENA_INDEX_TIMEOUT_ENV = "HEADROOM_SERENA_INDEX_TIMEOUT"
+
+
+def _resolve_serena_index_timeout_seconds() -> int:
+    """Resolve the Serena pre-index stall budget from env, else the default.
+
+    A wrap launched from a directory Serena has already claimed re-indexes the
+    whole tree on every run, and 300s of that is time the agent is not running
+    (#3093). The budget is therefore tunable per environment, which also keeps
+    it reachable from ``wrap ... -- agents`` sessions that take no flags.
+
+    Unlike :func:`_resolve_wrap_proxy_timeout_seconds`, a bad value is not
+    fatal here: the pre-index is best-effort, so an unusable setting falls back
+    to the default rather than aborting a launch that would otherwise succeed.
+    It is reported unconditionally, because a knob that looks applied but is
+    not is the failure this issue is about.
+    """
+    raw = os.environ.get(_SERENA_INDEX_TIMEOUT_ENV, "").strip()
+    if not raw:
+        return _SERENA_INDEX_TIMEOUT
+
+    timeout_seconds: int | None
+    try:
+        timeout_seconds = int(raw)
+    except ValueError:
+        timeout_seconds = None
+    if timeout_seconds is None or timeout_seconds <= 0:
+        click.echo(
+            f"  Serena: ignoring {_SERENA_INDEX_TIMEOUT_ENV}={raw!r} "
+            f"(want a positive integer number of seconds) "
+            f"— using {_SERENA_INDEX_TIMEOUT}s"
+        )
+        return _SERENA_INDEX_TIMEOUT
+    return timeout_seconds
 
 
 def _kill_serena_index_tree(proc: subprocess.Popen) -> None:
@@ -1865,8 +1909,9 @@ def _index_serena_project(*, verbose: bool = False) -> None:
     so any failure here is survivable.
 
     This runs on the launch path, synchronously: the agent starts only once it
-    returns, so the timeout below is time the user spends staring at nothing.
-    Two guards keep that bounded (#2938):
+    returns, so the timeout below is time the user spends staring at nothing —
+    ``HEADROOM_SERENA_INDEX_TIMEOUT`` resizes that budget (#3093). Two guards
+    keep it bounded (#2938):
 
     * ``stdin`` is ``DEVNULL``. Serena prompts when it has to auto-create
       ``project.yml``, and because stdout is captured the question never
@@ -1881,6 +1926,8 @@ def _index_serena_project(*, verbose: bool = False) -> None:
         if verbose:
             click.echo("  Serena: uvx not found — skipping pre-index")
         return
+
+    timeout_seconds = _resolve_serena_index_timeout_seconds()
 
     popen_kwargs: dict[str, Any] = {
         "stdout": subprocess.PIPE,
@@ -1921,7 +1968,7 @@ def _index_serena_project(*, verbose: bool = False) -> None:
     # the output is captured, so without this line the wrap looks hung.
     click.echo("  Serena: pre-indexing project (first run can take a while)…")
     try:
-        _stdout, stderr = proc.communicate(timeout=_SERENA_INDEX_TIMEOUT)
+        _stdout, stderr = proc.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired:
         _kill_serena_index_tree(proc)
         click.echo("  Serena: pre-index timed out (will index on demand)")
@@ -5533,9 +5580,8 @@ def vscode_copilot(
             f'  "github.copilot.advanced.debug.overrideProxyUrl": "{vscode_proxy_url(actual_port, _project_name_from_cwd())}",'
         )
         click.echo(
-            f'  "github.copilot.advanced.debug.overrideCapiUrl": "{vscode_proxy_url(actual_port, _project_name_from_cwd())}",'
+            f'  "github.copilot.advanced.debug.overrideCapiUrl": "{vscode_proxy_url(actual_port, _project_name_from_cwd())}"'
         )
-        click.echo('  "github.copilot.advanced.debug.overrideAuthType": "token"')
 
     _run_proxy_only_watcher(
         agent_label="VS CODE COPILOT",
@@ -6417,7 +6463,7 @@ def grok(
         backend=backend,
         anyllm_provider=anyllm_provider,
         region=region,
-        openai_api_url="https://api.x.ai",
+        openai_api_url=_GROK_DEFAULT_API_URL,
     )
 
 
@@ -6507,9 +6553,9 @@ def grok_build(
 
     \b
     Grok Build reads model endpoints from ``~/.grok/config.toml``. This
-    command starts the proxy, optionally sets up the selected CLI context
-    tool, injects a Headroom-managed ``[model.grok-build]`` override, and
-    prints next steps.
+    command starts the proxy (upstream ``https://api.x.ai``, same as
+    ``wrap grok``), injects a Headroom-managed ``[model.grok-build]``
+    override, and prints next steps.
 
     \b
     Example:
@@ -6536,6 +6582,8 @@ def grok_build(
         for line in _render_grok_build_setup_lines(actual_port, project=project):
             click.echo(line)
 
+    # Client hop is local proxy via config.toml; upstream must be xAI (not
+    # the OpenAI default). Omitting this caused 401s with Grok auth headers.
     _run_proxy_only_watcher(
         agent_label="grok-build",
         port=port,
@@ -6544,6 +6592,7 @@ def grok_build(
         memory=memory,
         agent_type="grok_build",
         print_setup_lines=_print_grok_build_setup,
+        openai_api_url=_GROK_DEFAULT_API_URL,
     )
 
 
