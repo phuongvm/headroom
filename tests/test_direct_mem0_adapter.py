@@ -118,3 +118,44 @@ def test_direct_mem0_search_falls_back_to_qdrant_for_direct_writes(monkeypatch) 
     assert fake_qdrant.query_kwargs["limit"] == 2
     assert results[0].memory.content == "opsx runtime memory marker"
     assert results[0].memory.user_id == "opsx-runtime-20260701"
+
+
+def test_direct_mem0_config_and_embed_dims(monkeypatch) -> None:
+    monkeypatch.setenv("HEADROOM_MEM0_EMBEDDER_DIMS", "1024")
+    config = Mem0Config()
+    assert config.embedder_dims == 1024
+
+    mock_client = SimpleNamespace()
+    captured_kwargs = {}
+
+    def fake_create(**kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(data=[SimpleNamespace(embedding=[0.5] * 1024)])
+
+    mock_client.embeddings = SimpleNamespace(create=fake_create)
+    adapter = DirectMem0Adapter(config)
+    adapter._openai_client = mock_client
+
+    emb = adapter._embed("test text")
+    assert len(emb) == 1024
+    assert captured_kwargs["dimensions"] == 1024
+    assert captured_kwargs["model"] == config.embedder_model
+    assert captured_kwargs["input"] == "test text"
+
+
+def test_direct_mem0_embed_no_dims_when_none() -> None:
+    config = Mem0Config(embedder_dims=None)
+    mock_client = SimpleNamespace()
+    captured_kwargs = {}
+
+    def fake_create(**kwargs):
+        captured_kwargs.update(kwargs)
+        return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2])])
+
+    mock_client.embeddings = SimpleNamespace(create=fake_create)
+    adapter = DirectMem0Adapter(config)
+    adapter._openai_client = mock_client
+
+    adapter._embed("test text")
+    assert "dimensions" not in captured_kwargs
+

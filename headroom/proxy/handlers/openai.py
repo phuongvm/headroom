@@ -4912,6 +4912,7 @@ class OpenAIHandlerMixin:
                     outcome_provider=openai_chat_outcome_provider,
                 )
             else:
+                body["stream"] = False
                 headers = await apply_copilot_api_auth(headers, url=url)
                 response = await self._retry_request("POST", url, headers, body)
 
@@ -4957,7 +4958,10 @@ class OpenAIHandlerMixin:
                             if _hook_ctx.tools is not None:
                                 body["tools"] = _hook_ctx.tools
                             _r = await self._retry_request("POST", url, headers, body)
-                            _r_json = _r.json()
+                            try:
+                                _r_json = _r.json()
+                            except (ValueError, json.JSONDecodeError):
+                                _r_json = {}
                             _hook_usage.record(_r_json, **CHAT_USAGE_KEYS)
                             return _r_json
 
@@ -5139,7 +5143,7 @@ class OpenAIHandlerMixin:
                     # These are charged at 50% of the input price
                     prompt_details = usage.get("prompt_tokens_details") or {}
                     cache_read_tokens = _usage_int(prompt_details.get("cached_tokens"))
-                except (KeyError, TypeError, AttributeError) as e:
+                except (KeyError, TypeError, AttributeError, ValueError, json.JSONDecodeError) as e:
                     logger.debug(
                         f"[{request_id}] Failed to extract cached tokens from OpenAI response: {e}"
                     )
@@ -5231,8 +5235,11 @@ class OpenAIHandlerMixin:
                                 "POST", url, headers, continuation_body
                             )
                             if cont_response.status_code == 200:
-                                resp_json = cont_response.json()
-                                response = cont_response
+                                try:
+                                    resp_json = cont_response.json()
+                                    response = cont_response
+                                except (ValueError, json.JSONDecodeError):
+                                    pass
 
                             logger.info(
                                 f"[{request_id}] Memory: Handled {len(tool_results)} "
@@ -6059,6 +6066,8 @@ class OpenAIHandlerMixin:
                     waste_signals=waste_signals_dict,
                 )
             else:
+                if body.get("stream") is not False:
+                    body["stream"] = False
 
                 async def _buffered_ccr_operation():
                     nonlocal headers
@@ -6455,8 +6464,11 @@ class OpenAIHandlerMixin:
                                 cont_response = await self._retry_request(
                                     "POST", url, headers, continuation_body
                                 )
-                                resp_json = cont_response.json()
-                                response = cont_response
+                                try:
+                                    resp_json = cont_response.json()
+                                    response = cont_response
+                                except (ValueError, json.JSONDecodeError):
+                                    pass
                                 logger.info(
                                     f"[{request_id}] Memory: Handled {len(tool_outputs)} "
                                     f"tool call(s) with continuation for user {memory_user_id} (responses)"

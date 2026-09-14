@@ -130,6 +130,11 @@ class Mem0Config:
             "openrouter/google/gemini-embedding-001",
         )
     )
+    embedder_dims: int | None = field(
+        default_factory=lambda: int(os.environ["HEADROOM_MEM0_EMBEDDER_DIMS"].strip())
+        if os.environ.get("HEADROOM_MEM0_EMBEDDER_DIMS", "").strip()
+        else None
+    )
     llm_model: str = field(
         default_factory=lambda: os.environ.get(
             "HEADROOM_MEM0_LLM_MODEL",
@@ -240,6 +245,8 @@ class DirectMem0Adapter:
             qdrant_provider_cfg: dict[str, Any] = {
                 "collection_name": self._config.collection_name,
             }
+            if self._config.embedder_dims is not None:
+                qdrant_provider_cfg["embedding_model_dims"] = self._config.embedder_dims
             if self._config.qdrant_url:
                 qdrant_provider_cfg["url"] = self._config.qdrant_url
             else:
@@ -247,6 +254,12 @@ class DirectMem0Adapter:
                 qdrant_provider_cfg["port"] = self._config.qdrant_port
             if self._config.qdrant_api_key:
                 qdrant_provider_cfg["api_key"] = self._config.qdrant_api_key
+
+            embedder_provider_cfg: dict[str, Any] = {
+                "model": self._config.embedder_model,
+            }
+            if self._config.embedder_dims is not None:
+                embedder_provider_cfg["embedding_dims"] = self._config.embedder_dims
 
             mem0_config: dict[str, Any] = {
                 "vector_store": {
@@ -259,7 +272,7 @@ class DirectMem0Adapter:
                 },
                 "embedder": {
                     "provider": "openai",
-                    "config": {"model": self._config.embedder_model},
+                    "config": embedder_provider_cfg,
                 },
             }
 
@@ -287,10 +300,13 @@ class DirectMem0Adapter:
 
     def _embed(self, text: str) -> list[float]:
         """Generate embedding for text using OpenAI."""
-        response = self._openai_client.embeddings.create(
-            input=text,
-            model=self._config.embedder_model,
-        )
+        kwargs: dict[str, Any] = {
+            "input": text,
+            "model": self._config.embedder_model,
+        }
+        if self._config.embedder_dims is not None:
+            kwargs["dimensions"] = self._config.embedder_dims
+        response = self._openai_client.embeddings.create(**kwargs)
         return list(response.data[0].embedding)
 
     def _generate_id(self, content: str, user_id: str) -> str:

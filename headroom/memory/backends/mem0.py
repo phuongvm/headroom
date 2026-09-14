@@ -12,6 +12,7 @@ Supports both local mode (embedded services) and cloud mode (Mem0 API).
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 import warnings
@@ -92,6 +93,11 @@ class Mem0Config:
             "openrouter/google/gemini-embedding-001",
         )
     )
+    embedder_dims: int | None = field(
+        default_factory=lambda: int(os.environ["HEADROOM_MEM0_EMBEDDER_DIMS"].strip())
+        if os.environ.get("HEADROOM_MEM0_EMBEDDER_DIMS", "").strip()
+        else None
+    )
     enable_graph: bool = True  # Set to False to disable graph storage (vector-only)
 
     # Collection settings
@@ -159,6 +165,8 @@ class Mem0Backend:
                 qdrant_provider_cfg: dict[str, Any] = {
                     "collection_name": self._config.collection_name,
                 }
+                if self._config.embedder_dims is not None:
+                    qdrant_provider_cfg["embedding_model_dims"] = self._config.embedder_dims
                 if self._config.qdrant_url:
                     qdrant_provider_cfg["url"] = self._config.qdrant_url
                 else:
@@ -166,6 +174,12 @@ class Mem0Backend:
                     qdrant_provider_cfg["port"] = self._config.qdrant_port
                 if self._config.qdrant_api_key:
                     qdrant_provider_cfg["api_key"] = self._config.qdrant_api_key
+
+                embedder_provider_cfg: dict[str, Any] = {
+                    "model": self._config.embedder_model,
+                }
+                if self._config.embedder_dims is not None:
+                    embedder_provider_cfg["embedding_dims"] = self._config.embedder_dims
 
                 config: dict[str, Any] = {
                     "vector_store": {
@@ -180,9 +194,7 @@ class Mem0Backend:
                     },
                     "embedder": {
                         "provider": "openai",
-                        "config": {
-                            "model": self._config.embedder_model,
-                        },
+                        "config": embedder_provider_cfg,
                     },
                 }
 
