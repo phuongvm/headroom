@@ -156,6 +156,6 @@ def test_direct_mem0_embed_no_dims_when_none() -> None:
     adapter = DirectMem0Adapter(config)
     adapter._openai_client = mock_client
 
-    adapter._embed("test text")
+    emb = adapter._embed("test text")
     assert "dimensions" not in captured_kwargs
 

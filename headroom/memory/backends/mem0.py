@@ -12,7 +12,6 @@ Supports both local mode (embedded services) and cloud mode (Mem0 API).
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import uuid
 import warnings
