@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _CWD_PREFIXES: tuple[str, ...] = (
     "Primary working directory:",  # Claude Code (current)
     "Working directory:",  # Claude Code (older) / Codex
+    "Current working directory:",  # Hermes Agent
     "cwd:",  # Generic / debug format
 )
 

@@ -221,6 +221,8 @@ _merge_cost_stats = merge_cost_stats
 
 
 _AGENT_LABELS: dict[str, str] = {
+    "hermes": "Hermes",
+    "hermes-agent": "Hermes",
     "claude": "Claude",
     "claude-code": "Claude",
     "claude_cli": "Claude",
@@ -263,6 +265,8 @@ def _normalize_agent_key(raw: Any) -> str | None:
         value = value.removeprefix("wrap-")
     if value in {"claude-cli", "claude-code", "claude-code-cli"}:
         return "claude-code"
+    if value in {"hermes", "hermes-agent"}:
+        return "hermes"
     if value in {"codex-cli", "codex"}:
         return "codex"
     if value in {"github-copilot", "copilot"}:
@@ -296,6 +300,8 @@ def _classify_agent_from_log(entry: dict[str, Any]) -> tuple[str, str, str]:
         return "claude-code", _agent_label("claude-code"), "model"
     if "gemini" in model:
         return "gemini", _agent_label("gemini"), "model"
+    if "hermes" in model:
+        return "hermes", _agent_label("hermes"), "model"
 
     key = _normalize_agent_key(entry.get("provider"))
     if key:
