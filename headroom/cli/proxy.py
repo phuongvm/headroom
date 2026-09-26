@@ -345,7 +345,12 @@ def dashboard(port: int, no_open: bool) -> None:
 )
 @click.option("--no-optimize", is_flag=True, help="Disable optimization (passthrough mode)")
 @click.option("--no-cache", is_flag=True, help="Disable semantic caching")
-@click.option("--no-rate-limit", is_flag=True, help="Disable rate limiting")
+@click.option(
+    "--no-rate-limit",
+    is_flag=True,
+    envvar="HEADROOM_NO_RATE_LIMIT",
+    help="Disable rate limiting. Env: HEADROOM_NO_RATE_LIMIT.",
+)
 @click.option(
     "--protect-tool-results",
     default=None,
