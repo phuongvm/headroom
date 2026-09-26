@@ -11065,25 +11065,26 @@ class OpenAIHandlerMixin:
             cache_read_tokens = usage.get("cache_read_input_tokens", 0)
             cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
             uncached_input_tokens = max(0, input_tokens - cache_read_tokens - cache_write_tokens)
-            await self._record_request_outcome(
-                RequestOutcome(
-                    request_id=request_id,
-                    provider=provider,
-                    model=_passthrough_model_from_path(path, endpoint_name),
-                    status_code=response.status_code,
-                    original_tokens=input_tokens,
-                    optimized_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    tokens_saved=0,
-                    attempted_input_tokens=input_tokens,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                    uncached_input_tokens=uncached_input_tokens,
-                    total_latency_ms=latency_ms,
-                    tags=tags,
-                    client=client,
+            if endpoint_name != "models":
+                await self._record_request_outcome(
+                    RequestOutcome(
+                        request_id=request_id,
+                        provider=provider,
+                        model=_passthrough_model_from_path(path, endpoint_name),
+                        status_code=response.status_code,
+                        original_tokens=input_tokens,
+                        optimized_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        tokens_saved=0,
+                        attempted_input_tokens=input_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                        cache_write_tokens=cache_write_tokens,
+                        uncached_input_tokens=uncached_input_tokens,
+                        total_latency_ms=latency_ms,
+                        tags=tags,
+                        client=client,
+                    )
                 )
-            )
 
         return Response(
             content=response_content,
@@ -11247,31 +11248,32 @@ class OpenAIHandlerMixin:
                     0,
                     input_tokens - cache_read_tokens - cache_write_tokens,
                 )
-                await self._record_request_outcome(
-                    RequestOutcome(
-                        request_id=request_id,
-                        provider=provider,
-                        model=_passthrough_model_from_path(path, endpoint_name),
-                        original_tokens=input_tokens,
-                        optimized_tokens=input_tokens,
-                        output_tokens=output_tokens,
-                        tokens_saved=0,
-                        attempted_input_tokens=input_tokens,
-                        cache_read_tokens=cache_read_tokens,
-                        cache_write_tokens=cache_write_tokens,
-                        cache_write_5m_tokens=stream_state[
-                            "cache_creation_ephemeral_5m_input_tokens"
-                        ],
-                        cache_write_1h_tokens=stream_state[
-                            "cache_creation_ephemeral_1h_input_tokens"
-                        ],
-                        uncached_input_tokens=uncached_input_tokens,
-                        total_latency_ms=(time.time() - start_time) * 1000,
-                        ttfb_ms=stream_state["ttfb_ms"] or 0,
-                        tags=tags,
-                        client=client,
+                if endpoint_name != "models":
+                    await self._record_request_outcome(
+                        RequestOutcome(
+                            request_id=request_id,
+                            provider=provider,
+                            model=_passthrough_model_from_path(path, endpoint_name),
+                            original_tokens=input_tokens,
+                            optimized_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            tokens_saved=0,
+                            attempted_input_tokens=input_tokens,
+                            cache_read_tokens=cache_read_tokens,
+                            cache_write_tokens=cache_write_tokens,
+                            cache_write_5m_tokens=stream_state[
+                                "cache_creation_ephemeral_5m_input_tokens"
+                            ],
+                            cache_write_1h_tokens=stream_state[
+                                "cache_creation_ephemeral_1h_input_tokens"
+                            ],
+                            uncached_input_tokens=uncached_input_tokens,
+                            total_latency_ms=(time.time() - start_time) * 1000,
+                            ttfb_ms=stream_state["ttfb_ms"] or 0,
+                            tags=tags,
+                            client=client,
+                        )
                     )
-                )
 
         media_type = upstream_response.headers.get("content-type") or "text/event-stream"
         return StreamingResponse(

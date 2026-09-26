@@ -294,7 +294,7 @@ def _classify_agent_from_log(entry: dict[str, Any]) -> tuple[str, str, str]:
             return key, _agent_label(key), source
 
     model = str(entry.get("model") or "").lower()
-    if "agent-" in model or "hermes" in model:
+    if model.startswith("cb-") or "agent-" in model or "hermes" in model:
         return "hermes", _agent_label("hermes"), "model"
     if "codex" in model:
         return "codex", _agent_label("codex"), "model"
@@ -386,7 +386,7 @@ def _build_agent_usage_summary(
         inferred_model_counts: dict[str, int] = {}
         for model, count in requests_by_model.items():
             model_lower = str(model).lower()
-            if "agent-" in model_lower or "hermes" in model_lower:
+            if model_lower.startswith("cb-") or "agent-" in model_lower or "hermes" in model_lower:
                 key = "hermes"
             elif "codex" in model_lower:
                 key = "codex"
@@ -412,7 +412,7 @@ def _build_agent_usage_summary(
                 row["providers"][provider] = int(row["providers"].get(provider, 0)) + int(count)
         for model, count in requests_by_model.items():
             model_lower = str(model).lower()
-            if "agent-" in model_lower or "hermes" in model_lower:
+            if model_lower.startswith("cb-") or "agent-" in model_lower or "hermes" in model_lower:
                 key = "hermes"
             elif "codex" in model_lower:
                 key = "codex"
@@ -3752,6 +3752,14 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
     # Health/readiness probes must stay reachable without a token so
     # orchestrators can check a container that binds non-loopback.
     _AUTH_EXEMPT_PATHS = frozenset({"/health", "/healthz", "/livez", "/readyz"})
+    _UNSUPPORTED_PROBE_PATHS = frozenset({
+        "/api/tags",
+        "/api/show",
+        "/v1/props",
+        "/props",
+        "/version",
+        "/api/v1/models",
+    })
 
     # Loud warning when a non-loopback bind has no token configured: that is the
     # exact shape (e.g. the Docker 0.0.0.0 image) that exposes unauthenticated
@@ -3788,6 +3796,10 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             path = request.url.path
             client = getattr(request, "client", None)
             client_host = getattr(client, "host", None) if client is not None else None
+            if path in _UNSUPPORTED_PROBE_PATHS:
+                rejection = JSONResponse(status_code=404, content={"error": "not_found"})
+                _apply_security_headers(rejection)
+                return rejection
             if path not in _AUTH_EXEMPT_PATHS and not is_loopback_host(client_host):
                 provided = _extract_proxy_token(request.headers)
                 if provided is None or not hmac.compare_digest(
