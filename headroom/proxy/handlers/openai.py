@@ -4248,15 +4248,23 @@ class OpenAIHandlerMixin:
             # path without one.
             try:
                 if self.memory_handler.config.inject_context:
-                    memory_context = await asyncio.wait_for(
-                        self.memory_handler.search_and_format_context(
-                            memory_user_id,
-                            optimized_messages,
-                            request_context=memory_request_ctx,
-                            query=MemoryQuery.from_messages(optimized_messages),
-                        ),
-                        timeout=(self.config.anthropic_pre_upstream_memory_context_timeout_seconds),
-                    )
+                    try:
+                        memory_context = await asyncio.wait_for(
+                            self.memory_handler.search_and_format_context(
+                                memory_user_id,
+                                optimized_messages,
+                                request_context=memory_request_ctx,
+                                query=MemoryQuery.from_messages(optimized_messages),
+                            ),
+                            timeout=(self.config.anthropic_pre_upstream_memory_context_timeout_seconds),
+                        )
+                    except asyncio.TimeoutError:
+                        memory_context = None
+                        logger.info(
+                            f"[{request_id}] Memory: Context lookup exceeded "
+                            f"{self.config.anthropic_pre_upstream_memory_context_timeout_seconds:.1f}s; "
+                            "continuing without it (openai)"
+                        )
                     if memory_context:
                         from headroom.proxy.helpers import (
                             append_text_to_latest_user_chat_message,
@@ -4324,7 +4332,7 @@ class OpenAIHandlerMixin:
                     memory_tools_injected = True
                     logger.info(f"[{request_id}] Memory: Injected memory tools (openai)")
             except Exception as e:
-                logger.warning(f"[{request_id}] Memory injection failed: {e}")
+                logger.warning(f"[{request_id}] Memory injection failed: {type(e).__name__}: {e}")
 
         if memory_context_injected or memory_tools_injected:
             remembered_event = self.pipeline_extensions.emit(

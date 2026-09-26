@@ -525,7 +525,7 @@ class ProxyConfig:
     # Fail-open timeout for Anthropic memory-context lookup while the request
     # is still holding a pre-upstream slot. Compression already has its own
     # COMPRESSION_TIMEOUT_SECONDS guard; this bounds the memory leg too.
-    anthropic_pre_upstream_memory_context_timeout_seconds: float = 2.0
+    anthropic_pre_upstream_memory_context_timeout_seconds: float = 10.0
 
     # Bound the dedicated compression threadpool. CPU-bound Rust work runs
     # here; the pool is separate from asyncio's default executor so other

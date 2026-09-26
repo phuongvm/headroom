@@ -1535,7 +1535,11 @@ def proxy(
         anthropic_pre_upstream_memory_context_timeout_seconds=(
             anthropic_pre_upstream_memory_context_timeout_seconds
             if anthropic_pre_upstream_memory_context_timeout_seconds is not None
-            else 2.0
+            else float(
+                os.environ.get("HEADROOM_MEMORY_CONTEXT_TIMEOUT_SECONDS")
+                or os.environ.get("HEADROOM_ANTHROPIC_PRE_UPSTREAM_MEMORY_CONTEXT_TIMEOUT_SECONDS")
+                or 10.0
+            )
         ),
     )
 
