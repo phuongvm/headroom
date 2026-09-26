@@ -286,7 +286,7 @@ def _classify_agent_from_log(entry: dict[str, Any]) -> tuple[str, str, str]:
     raw_tags = entry.get("tags")
     tags = raw_tags if isinstance(raw_tags, dict) else {}
     for source, candidate in (
-        ("client", tags.get("client")),
+        ("client", tags.get("client") or entry.get("client")),
         ("stack", tags.get("stack") or tags.get("headroom-stack")),
     ):
         key = _normalize_agent_key(candidate)
@@ -294,14 +294,14 @@ def _classify_agent_from_log(entry: dict[str, Any]) -> tuple[str, str, str]:
             return key, _agent_label(key), source
 
     model = str(entry.get("model") or "").lower()
+    if "agent-" in model or "hermes" in model:
+        return "hermes", _agent_label("hermes"), "model"
     if "codex" in model:
         return "codex", _agent_label("codex"), "model"
     if "claude" in model:
         return "claude-code", _agent_label("claude-code"), "model"
     if "gemini" in model:
         return "gemini", _agent_label("gemini"), "model"
-    if "hermes" in model:
-        return "hermes", _agent_label("hermes"), "model"
 
     key = _normalize_agent_key(entry.get("provider"))
     if key:
@@ -386,7 +386,9 @@ def _build_agent_usage_summary(
         inferred_model_counts: dict[str, int] = {}
         for model, count in requests_by_model.items():
             model_lower = str(model).lower()
-            if "codex" in model_lower:
+            if "agent-" in model_lower or "hermes" in model_lower:
+                key = "hermes"
+            elif "codex" in model_lower:
                 key = "codex"
             elif "claude" in model_lower:
                 key = "claude-code"
@@ -410,7 +412,9 @@ def _build_agent_usage_summary(
                 row["providers"][provider] = int(row["providers"].get(provider, 0)) + int(count)
         for model, count in requests_by_model.items():
             model_lower = str(model).lower()
-            if "codex" in model_lower:
+            if "agent-" in model_lower or "hermes" in model_lower:
+                key = "hermes"
+            elif "codex" in model_lower:
                 key = "codex"
             elif "claude" in model_lower:
                 key = "claude-code"

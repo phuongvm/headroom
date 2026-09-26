@@ -28,6 +28,9 @@ SUBSCRIPTION_UA_PREFIXES: tuple[str, ...] = (
 
 
 CLIENT_UA_MAP: tuple[tuple[str, str], ...] = (
+    ("hermes", "hermes"),
+    ("hermesagent", "hermes"),
+    ("hermes-agent", "hermes"),
     ("claude-code/", "claude-code"),
     ("claude-cli/", "claude-code"),
     ("claude-vscode/", "claude-vscode"),
