@@ -2695,6 +2695,14 @@ def _request_can_view_dashboard_metadata(
     if _request_is_loopback(request):
         return True
 
+    # If caller presents a valid proxy token, they are authorized administrator.
+    proxy_token = os.environ.get("HEADROOM_PROXY_TOKEN") or None
+    if proxy_token:
+        from headroom.proxy.auth_policy import read_proxy_token
+        provided = read_proxy_token(request.headers)
+        if provided and hmac.compare_digest(provided, proxy_token):
+            return True
+
     from headroom.proxy.forwarded_headers import peer_is_trusted_gateway, resolve_client_ip
     from headroom.proxy.loopback_guard import is_ip_literal_host_header
 
