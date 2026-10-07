@@ -2879,14 +2879,41 @@ def _request_can_view_dashboard_metadata(
         if provided and hmac.compare_digest(provided, proxy_token):
             return True
 
-    from headroom.proxy.forwarded_headers import peer_is_trusted_gateway, resolve_client_ip
+    from headroom.proxy.forwarded_headers import (
+        load_trusted_gateway_cidrs,
+        peer_is_trusted_gateway,
+        resolve_client_ip,
+    )
     from headroom.proxy.loopback_guard import is_ip_literal_host_header
+
+    client = getattr(request, "client", None)
+    client_host = getattr(client, "host", None) if client is not None else None
+
+    # Authenticated via Cloudflare Access through trusted reverse proxy gateway
+    has_cf_access = bool(
+        request.headers.get("cf-access-jwt-assertion")
+        or request.headers.get("cf-access-authenticated-user-email")
+    )
+    if has_cf_access and peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs()):
+        return True
 
     try:
         host_header = request.headers.get("host")
     except AttributeError:
         return False
-    if not is_ip_literal_host_header(host_header):
+
+    trusted_hosts = {
+        h.strip().lower()
+        for h in os.environ.get("HEADROOM_PROXY_TRUSTED_HOSTS", "headroom.ptdev.vip").split(",")
+        if h.strip()
+    }
+    is_trusted_host = (
+        bool(host_header)
+        and host_header.split(":")[0].lower() in trusted_hosts
+        and peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs())
+    )
+
+    if not is_ip_literal_host_header(host_header) and not is_trusted_host:
         return False
     # is_ip_literal_host_header() rejects a missing Host, so host_header is a str here.
     assert host_header is not None
@@ -2898,6 +2925,9 @@ def _request_can_view_dashboard_metadata(
     # require it to identify this exact scheme/host/port.
     if not _request_has_same_origin_or_no_provenance(request, host_header):
         return False
+
+    if is_trusted_host and has_cf_access:
+        return True
 
     return peer_is_trusted_gateway(
         resolve_client_ip(request),
@@ -4191,6 +4221,32 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 _apply_security_headers(rejection)
                 return rejection
             exempt = request.method == "GET" and path in _AUTH_EXEMPT_PATHS
+
+            from headroom.proxy.forwarded_headers import (
+                load_trusted_gateway_cidrs,
+                peer_is_trusted_gateway,
+            )
+            is_trusted_peer = is_loopback_host(client_host) or peer_is_trusted_gateway(
+                client_host, load_trusted_gateway_cidrs()
+            )
+
+            # Dashboard UI & static assets: allow GET from loopback or trusted reverse proxy gateway
+            is_dashboard_ui = request.method == "GET" and (
+                path in {"/dashboard", "/dashboard/", "/dashboard/settings", "/favicon.ico"}
+                or path.startswith("/dashboard/static/")
+            )
+            if is_dashboard_ui and is_trusted_peer:
+                exempt = True
+
+            # Cloudflare Access authenticated requests via trusted gateway tunnel
+            has_cf_access = bool(
+                request.headers.get("cf-access-jwt-assertion")
+                or request.headers.get("cf-access-authenticated-user-email")
+            )
+            if has_cf_access and is_trusted_peer:
+                exempt = True
+                request.state.proxy_authenticated = True
+
             if not exempt and not is_loopback_host(client_host):
                 provided = _extract_proxy_token(request.headers)
                 if provided is None or not hmac.compare_digest(
@@ -4338,6 +4394,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         short-cut.
         """
         if _authenticated_at_gate(request) or _is_host_of_loopback_published_container(request):
+            return
+        client = getattr(request, "client", None)
+        client_host = getattr(client, "host", None) if client is not None else None
+        from headroom.proxy.forwarded_headers import (
+            load_trusted_gateway_cidrs,
+            peer_is_trusted_gateway,
+        )
+        has_cf_access = bool(
+            request.headers.get("cf-access-jwt-assertion")
+            or request.headers.get("cf-access-authenticated-user-email")
+        )
+        if has_cf_access and peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs()):
             return
         _require_loopback_or_trusted_dashboard_client(request)
 
