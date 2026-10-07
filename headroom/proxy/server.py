@@ -2889,14 +2889,6 @@ def _request_can_view_dashboard_metadata(
     client = getattr(request, "client", None)
     client_host = getattr(client, "host", None) if client is not None else None
 
-    # Authenticated via Cloudflare Access through trusted reverse proxy gateway
-    has_cf_access = bool(
-        request.headers.get("cf-access-jwt-assertion")
-        or request.headers.get("cf-access-authenticated-user-email")
-    )
-    if has_cf_access and peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs()):
-        return True
-
     try:
         host_header = request.headers.get("host")
     except AttributeError:
@@ -2926,8 +2918,13 @@ def _request_can_view_dashboard_metadata(
     if not _request_has_same_origin_or_no_provenance(request, host_header):
         return False
 
-    if is_trusted_host and has_cf_access:
-        return True
+    # Authenticated via Cloudflare Access through trusted reverse proxy gateway on trusted host
+    has_cf_access = bool(
+        request.headers.get("cf-access-jwt-assertion")
+        and request.headers.get("cf-access-authenticated-user-email")
+    )
+    if is_trusted_host:
+        return has_cf_access
 
     return peer_is_trusted_gateway(
         resolve_client_ip(request),
@@ -4229,21 +4226,29 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             is_trusted_peer = is_loopback_host(client_host) or peer_is_trusted_gateway(
                 client_host, load_trusted_gateway_cidrs()
             )
+            raw_host = request.headers.get("host") or ""
+            host_domain = raw_host.split(":")[0].strip().lower()
+            trusted_hosts = {
+                h.strip().lower()
+                for h in os.environ.get("HEADROOM_PROXY_TRUSTED_HOSTS", "headroom.ptdev.vip").split(",")
+                if h.strip()
+            }
+            is_trusted_host = host_domain in trusted_hosts
 
-            # Dashboard UI & static assets: allow GET from loopback or trusted reverse proxy gateway
+            # Dashboard UI & static assets: allow GET from loopback or trusted reverse proxy gateway on trusted host
             is_dashboard_ui = request.method == "GET" and (
                 path in {"/dashboard", "/dashboard/", "/dashboard/settings", "/favicon.ico"}
                 or path.startswith("/dashboard/static/")
             )
-            if is_dashboard_ui and is_trusted_peer:
+            if is_dashboard_ui and is_trusted_peer and is_trusted_host:
                 exempt = True
 
-            # Cloudflare Access authenticated requests via trusted gateway tunnel
+            # Cloudflare Access authenticated requests via trusted gateway tunnel on trusted host
             has_cf_access = bool(
                 request.headers.get("cf-access-jwt-assertion")
-                or request.headers.get("cf-access-authenticated-user-email")
+                and request.headers.get("cf-access-authenticated-user-email")
             )
-            if has_cf_access and is_trusted_peer:
+            if has_cf_access and is_trusted_peer and is_trusted_host:
                 exempt = True
                 request.state.proxy_authenticated = True
 
@@ -4401,11 +4406,18 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             load_trusted_gateway_cidrs,
             peer_is_trusted_gateway,
         )
+        raw_host = request.headers.get("host") or ""
+        host_domain = raw_host.split(":")[0].strip().lower()
+        trusted_hosts = {
+            h.strip().lower()
+            for h in os.environ.get("HEADROOM_PROXY_TRUSTED_HOSTS", "headroom.ptdev.vip").split(",")
+            if h.strip()
+        }
         has_cf_access = bool(
             request.headers.get("cf-access-jwt-assertion")
-            or request.headers.get("cf-access-authenticated-user-email")
+            and request.headers.get("cf-access-authenticated-user-email")
         )
-        if has_cf_access and peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs()):
+        if has_cf_access and host_domain in trusted_hosts and peer_is_trusted_gateway(client_host, load_trusted_gateway_cidrs()):
             return
         _require_loopback_or_trusted_dashboard_client(request)
 

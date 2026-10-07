@@ -64,6 +64,7 @@ def test_cf_access_from_untrusted_peer_rejected(monkeypatch: pytest.MonkeyPatch)
         client_ip="203.0.113.5",
         headers={
             "cf-access-authenticated-user-email": "attacker@evil.com",
+            "cf-access-jwt-assertion": "fake.jwt.token",
         },
     )
     cidrs = load_trusted_dashboard_client_cidrs()
@@ -79,6 +80,28 @@ def test_untrusted_domain_without_ip_literal_rejected(monkeypatch: pytest.Monkey
         path="/dashboard/settings",
         host="evil.attacker.com",
         client_ip="172.20.0.1",
+        headers={
+            "cf-access-authenticated-user-email": "vmphuongit@gmail.com",
+            "cf-access-jwt-assertion": "valid.jwt.token",
+        },
+    )
+    cidrs = load_trusted_dashboard_client_cidrs()
+    assert _request_can_view_dashboard_metadata(req, cidrs) is False
+
+
+def test_cf_access_missing_jwt_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HEADROOM_PROXY_TRUSTED_GATEWAY_CIDRS", "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16")
+    monkeypatch.setenv("HEADROOM_PROXY_TRUSTED_DASHBOARD_CLIENT_CIDRS", "172.16.0.0/12,10.0.0.0/8,192.168.0.0/16")
+    monkeypatch.setenv("HEADROOM_PROXY_TOKEN", "test-token-123")
+
+    # Only email provided without JWT assertion
+    req = _make_http_request(
+        path="/dashboard/settings",
+        host="headroom.ptdev.vip",
+        client_ip="172.20.0.1",
+        headers={
+            "cf-access-authenticated-user-email": "vmphuongit@gmail.com",
+        },
     )
     cidrs = load_trusted_dashboard_client_cidrs()
     assert _request_can_view_dashboard_metadata(req, cidrs) is False
