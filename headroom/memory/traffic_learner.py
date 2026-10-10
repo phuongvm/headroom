@@ -1742,14 +1742,14 @@ def _project_for_pattern(pattern: ExtractedPattern, roots: list[ProjectInfo]) ->
     )
 
     for cand in candidates:
+        cand_norm = cand.replace("\\", "/")
         for path, root in roots_sorted:
-            root_str = str(path).rstrip("/\\")
+            root_str = str(path).replace("\\", "/").rstrip("/")
             if not root_str:
                 continue
             if (
-                cand == root_str
-                or cand.startswith(root_str + "/")
-                or cand.startswith(root_str + "\\")
+                cand_norm == root_str
+                or cand_norm.startswith(root_str + "/")
             ):
                 return root
     return None
