@@ -165,6 +165,11 @@ def _sse_event_outcome(event_name: str | None, data_str: str, dialect: str) -> t
         }
     else:
         terminal = data_str.strip() == "[DONE]"
+        if not terminal and isinstance(data, dict):
+            choices = data.get("choices")
+            if isinstance(choices, list) and len(choices) > 0 and isinstance(choices[0], dict):
+                if choices[0].get("finish_reason") is not None:
+                    terminal = True
     return failed, terminal
 
 

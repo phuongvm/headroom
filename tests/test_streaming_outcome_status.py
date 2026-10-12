@@ -39,6 +39,7 @@ from headroom.proxy.server import HeadroomProxy
 CHAT_URL = "https://upstream.example/v1/chat/completions"
 CHUNK_1 = b'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Hel"}}]}\n\n'
 CHUNK_2 = b'data: {"id":"c1","choices":[{"index":0,"delta":{"content":"lo"}}]}\n\n'
+CHUNK_FINISH_STOP = b'data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
 DONE = b"data: [DONE]\n\n"
 ERROR_EVENT = b'data: {"error":{"type":"server_error","message":"upstream exploded"}}\n\n'
 
@@ -185,6 +186,22 @@ async def test_clean_complete_stream_records_success():
     proxy = _proxy()
     outcomes = _capture_outcomes(proxy)
     response = await _open_stream(proxy, _upstream([CHUNK_1, CHUNK_2, DONE]))
+
+    await _drain(response)
+
+    assert len(outcomes) == 1
+    assert outcomes[0].status_code == 200
+    assert outcomes[0].client_disconnected is False
+    proxy.metrics.record_request.assert_awaited_once()
+    proxy.metrics.record_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stream_with_finish_reason_stop_without_done_event_records_success():
+    """Streams from gateways (e.g. 9Router proxying Claude) ending in finish_reason without [DONE]."""
+    proxy = _proxy()
+    outcomes = _capture_outcomes(proxy)
+    response = await _open_stream(proxy, _upstream([CHUNK_1, CHUNK_FINISH_STOP]))
 
     await _drain(response)
 
