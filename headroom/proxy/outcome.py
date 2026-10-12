@@ -153,6 +153,14 @@ class RequestOutcome:
     # exhaustion) the funnel records a failed request instead of feeding the
     # savings/cost stats, so an upstream failure can't inflate save-rate.
     status_code: int = 200
+    # True when a streaming response ended because the CLIENT went away
+    # (disconnect / cancelled turn) before the upstream's terminal event, on
+    # an otherwise healthy upstream stream. Such an outcome keeps the
+    # upstream's 2xx ``status_code`` -- it is not a provider failure and must
+    # not feed ``record_failed`` / ``headroom_requests_failed_total`` -- and is
+    # marked ``client_aborted=1`` on the PERF line so it stays distinguishable
+    # from a stream that ran to completion.
+    client_disconnected: bool = False
 
     # ── Timing ────────────────────────────────────────────────────────
     # total_latency_ms: wall-clock end-to-end for this request
@@ -320,6 +328,7 @@ class RequestOutcome:
         tags: dict[str, str] | None,
         client: str | None,
         status_code: int = 200,
+        client_disconnected: bool = False,
         log_full_messages: bool = False,
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
@@ -415,6 +424,7 @@ class RequestOutcome:
             conversation_tokens_saved=conversation_tokens_saved,
             attempted_input_tokens=optimized_tokens + tokens_saved,
             status_code=status_code,
+            client_disconnected=client_disconnected,
             cache_read_tokens=cache_read_tokens,
             cache_write_tokens=cache_write_tokens,
             cache_write_5m_tokens=cache_write_5m_tokens,
@@ -797,6 +807,11 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
     # key=value pairs after ``transforms=`` the same way it reads
     # ``client=``).
     cached_part = " cached=1" if outcome.from_response_cache else ""
+    # ``client_aborted=1`` marks a stream the client closed before the
+    # upstream's terminal event. It is booked as a request (the upstream did
+    # answer 200), never as a failure; the marker keeps it separable from a
+    # stream that ran to completion. Appended only when set, like ``cached=1``.
+    aborted_part = " client_aborted=1" if outcome.client_disconnected else ""
     # Tool-schema DEFERRAL savings can't move tok_before/after (those count messages
     # only), so a tool-heavy turn shows tok_saved=0 while genuinely saving thousands of
     # tool-definition tokens. `tool_saved` carries that component and `total_saved` is
@@ -824,4 +839,5 @@ async def emit_request_outcome(handler: Any, outcome: RequestOutcome) -> None:
         f"transforms={_summarize_transforms(list(outcome.transforms_applied))}"
         f"{client_part}"
         f"{cached_part}"
+        f"{aborted_part}"
     )

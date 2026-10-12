@@ -48,9 +48,42 @@ logger = logging.getLogger("headroom.proxy")
 STREAM_FAILURE_STATUS = 502
 
 
-def _stream_outcome_status(status_code: int, completed_normally: bool) -> int:
-    """Keep post-start stream failures out of the success counter."""
-    return status_code if completed_normally else STREAM_FAILURE_STATUS
+def _stream_outcome_status(
+    status_code: int,
+    completed_normally: bool,
+    *,
+    client_disconnected: bool = False,
+    stream_failed: bool = False,
+) -> int:
+    """Keep post-start stream failures out of the success counter.
+
+    A stream that did not reach its protocol terminal event is booked as
+    ``STREAM_FAILURE_STATUS`` (an upstream failure) — EXCEPT when the reason
+    it did not finish is that the *client* went away (disconnect, cancelled
+    turn) while the upstream was still healthy. That is not a provider
+    failure: the upstream answered 200 and was streaming valid events when
+    the downstream consumer closed the body. Booking it as 502 made client
+    aborts dominate ``headroom_requests_failed_total`` and the dashboard's
+    Failed counter. A protocol error event (``stream_failed``) or an upstream
+    non-2xx status still classifies as a failure even if the client also left.
+    """
+    if completed_normally:
+        return status_code
+    if client_disconnected and not stream_failed and 200 <= status_code < 400:
+        return status_code
+    return STREAM_FAILURE_STATUS
+
+
+# Exceptions that reach a StreamingResponse body generator when the CLIENT
+# side ends the response early: ``GeneratorExit`` when Starlette/the event
+# loop closes the suspended generator, ``CancelledError`` when the ASGI
+# disconnect listener cancels the task group while the generator is awaiting
+# the next upstream chunk. Neither originates from the upstream connection —
+# upstream transport faults surface as ``httpx`` exceptions instead.
+_CLIENT_DISCONNECT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    GeneratorExit,
+    asyncio.CancelledError,
+)
 
 
 def _gemini_response_data(data: Any) -> dict[str, Any]:
@@ -787,6 +820,10 @@ class StreamingMixin:
         # See ``conversation_savings``.
         conversation_key: str | None = None,
         conversation_tokens_saved: int | None = None,
+        # True when the client went away before the upstream's terminal
+        # event. The outcome keeps the upstream's 2xx status (not an upstream
+        # failure) but the partial response must not advance prefix state.
+        client_disconnected: bool = False,
     ) -> None:
         from headroom.proxy.outcome import RequestOutcome
 
@@ -892,7 +929,9 @@ class StreamingMixin:
         # Prefix-tracker mutation is provider-specific state that lives
         # outside the metric funnel. Run it before the funnel so the next
         # request inherits correct prefix state regardless of metric path.
-        if 200 <= status_code < 300 and prefix_tracker is not None:
+        # A client-aborted stream keeps its 2xx outcome status, but its
+        # assistant message is partial, so it never advances prefix state.
+        if 200 <= status_code < 300 and not client_disconnected and prefix_tracker is not None:
             import copy as _copy
 
             forwarded_messages = body.get("messages", [])
@@ -1012,6 +1051,7 @@ class StreamingMixin:
             waste_signals=waste_signals,
             conversation_key=conversation_key,
             conversation_tokens_saved=conversation_tokens_saved,
+            client_disconnected=client_disconnected,
         )
         await self._record_request_outcome(outcome)
 
@@ -1616,6 +1656,7 @@ class StreamingMixin:
             full_sse_bytes = bytearray()
             parsed_response = None  # Set by memory block; used by CCR + prefix tracker
             completed_normally = False
+            client_disconnected = False
             pending_messages: list[dict] = []
             # Proxy-injected memory tools are invisible to the client, so their
             # tool_use blocks must never reach it (GH #2195).
@@ -1864,6 +1905,13 @@ class StreamingMixin:
                     stream_state["stream_terminal"] and not stream_state["stream_failed"]
                 )
 
+            except _CLIENT_DISCONNECT_EXCEPTIONS:
+                # The client closed the body (or its turn was cancelled)
+                # before the upstream terminal event arrived. Not an upstream
+                # failure: remember it for the outcome status, then let the
+                # close/cancel propagate untouched.
+                client_disconnected = True
+                raise
             except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as e:
                 logger.error(f"[{request_id}] Connection error to upstream API: {e}")
                 guarded_tail = _drain_context_guard()
@@ -1949,10 +1997,14 @@ class StreamingMixin:
                     client=client,
                     waste_signals=waste_signals,
                     status_code=_stream_outcome_status(
-                        upstream_response.status_code, completed_normally
+                        upstream_response.status_code,
+                        completed_normally,
+                        client_disconnected=client_disconnected,
+                        stream_failed=stream_state["stream_failed"],
                     ),
                     conversation_key=conversation_key,
                     conversation_tokens_saved=conversation_tokens_saved,
+                    client_disconnected=client_disconnected and not completed_normally,
                 )
                 if supports_mid_turn_coalescing(client) and pending_messages:
                     pending_event = json.dumps(
@@ -2050,9 +2102,10 @@ class StreamingMixin:
         completed_normally = False
         stream_failed = False
         stream_terminal = False
+        client_disconnected = False
 
         async def generate():
-            nonlocal completed_normally, stream_failed, stream_terminal
+            nonlocal completed_normally, stream_failed, stream_terminal, client_disconnected
             try:
                 assert backend is not None
 
@@ -2154,6 +2207,10 @@ class StreamingMixin:
 
                 completed_normally = stream_terminal and not stream_failed
 
+            except _CLIENT_DISCONNECT_EXCEPTIONS:
+                # Client went away mid-stream: not a backend failure.
+                client_disconnected = True
+                raise
             except Exception as e:
                 error_message = format_exception_message(e)
                 logger.error(f"[{request_id}] Bedrock streaming error: {error_message}")
@@ -2247,7 +2304,13 @@ class StreamingMixin:
                     overhead_ms=optimization_latency,
                     tags=tags,
                     client=client,
-                    status_code=_stream_outcome_status(200, completed_normally),
+                    status_code=_stream_outcome_status(
+                        200,
+                        completed_normally,
+                        client_disconnected=client_disconnected,
+                        stream_failed=stream_failed,
+                    ),
+                    client_disconnected=client_disconnected and not completed_normally,
                     log_full_messages=getattr(self.config, "log_full_messages", False),
                     cache_read_tokens=stream_state["cache_read_input_tokens"],
                     cache_write_tokens=stream_state["cache_creation_input_tokens"],
@@ -2344,6 +2407,7 @@ class StreamingMixin:
             full_sse_bytes = bytearray()
             completed_normally = False
             stream_failed = False
+            client_disconnected = False
 
             def _absorb(usage: dict[str, int] | None) -> None:
                 if not usage:
@@ -2373,6 +2437,11 @@ class StreamingMixin:
                 completed_normally = (
                     stream_state.get("stream_terminal", False) and not stream_failed
                 )
+            except _CLIENT_DISCONNECT_EXCEPTIONS:
+                # Client went away mid-stream: not a backend failure.
+                client_disconnected = True
+                stream_failed = stream_state.get("stream_failed", False)
+                raise
             except Exception as e:
                 logger.error(f"[{request_id}] Backend streaming error: {e}")
                 error_data = public_errors.openai_error_body(
@@ -2480,7 +2549,13 @@ class StreamingMixin:
                     overhead_ms=optimization_latency,
                     tags=tags,
                     client=client,
-                    status_code=_stream_outcome_status(200, completed_normally),
+                    status_code=_stream_outcome_status(
+                        200,
+                        completed_normally,
+                        client_disconnected=client_disconnected,
+                        stream_failed=stream_failed,
+                    ),
+                    client_disconnected=client_disconnected and not completed_normally,
                     log_full_messages=getattr(self.config, "log_full_messages", False),
                     cache_read_tokens=cache_read_tokens,
                     cache_write_tokens=cache_write_tokens,
