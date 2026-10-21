@@ -107,13 +107,25 @@ def test_hello_probe_answered_locally_without_forwarding(monkeypatch: Any) -> No
         # Keyless HEAD request as sent by Claude Code's Bun connectivity probe.
         head_resp = client.head("/api/hello", headers={"user-agent": "Bun/1.1.20"})
         assert head_resp.status_code == 200
+        assert head_resp.headers["content-length"] == "0"
+        assert head_resp.text == ""
 
         # Keyless GET request.
         get_resp = client.get("/api/hello")
         assert get_resp.status_code == 200
+        assert get_resp.headers["content-type"] == "application/json"
         assert get_resp.json() == {"status": "ok", "service": "headroom-proxy"}
 
-        assert client.get("/api/hello/").status_code == 200
+        # Trailing slash variants
+        head_slash_resp = client.head("/api/hello/")
+        assert head_slash_resp.status_code == 200
+        assert head_slash_resp.headers["content-length"] == "0"
+        assert head_slash_resp.text == ""
+
+        get_slash_resp = client.get("/api/hello/")
+        assert get_slash_resp.status_code == 200
+        assert get_slash_resp.headers["content-type"] == "application/json"
+        assert get_slash_resp.json() == {"status": "ok", "service": "headroom-proxy"}
 
     # Never relayed upstream (9Router has no /api/hello and answers 404).
     assert calls == []
