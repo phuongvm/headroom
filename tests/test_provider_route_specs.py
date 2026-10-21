@@ -13,11 +13,13 @@ from headroom.providers.route_specs import (
     GEMINI_BATCH_ROUTES,
     GEMINI_HANDLER_ROUTES,
     GEMINI_PASSTHROUGH_ROUTES,
+    LOCAL_PROBE_ROUTES,
     OPENAI_BATCH_ROUTES,
     OPENAI_HANDLER_ROUTES,
     OPENAI_PASSTHROUGH_ROUTES,
     PROVIDER_HANDLER_ROUTES,
     PROVIDER_PASSTHROUGH_ROUTES,
+    LocalProbeRoute,
     ProviderHandlerRoute,
     ProviderPassthroughRoute,
 )
@@ -72,9 +74,14 @@ def test_anthropic_passthrough_routes_model_endpoint_intent() -> None:
             "anthropic",
             "count_tokens",
         ),
-        ProviderPassthroughRoute("GET", "/api/hello", "anthropic", "api/hello"),
-        ProviderPassthroughRoute("HEAD", "/api/hello", "anthropic", "api/hello"),
     )
+
+
+def test_api_hello_probe_is_local_not_passthrough() -> None:
+    # /api/hello is answered by the proxy itself; 9Router has no such endpoint.
+    assert LocalProbeRoute("GET", "/api/hello") in LOCAL_PROBE_ROUTES
+    assert LocalProbeRoute("HEAD", "/api/hello") in LOCAL_PROBE_ROUTES
+    assert all(r.path.rstrip("/") != "/api/hello" for r in PROVIDER_PASSTHROUGH_ROUTES)
 
 
 def test_gemini_passthrough_routes_model_endpoint_intent() -> None:

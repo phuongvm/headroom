@@ -7,7 +7,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from headroom.providers.cloudcode import normalize_cloudcode_passthrough_path
 from headroom.providers.codex.endpoints import codex_backend_url
@@ -49,8 +49,10 @@ from headroom.providers.proxy_targets import (
     vertex_target_for_location as _vertex_target_for_location,
 )
 from headroom.providers.route_specs import (
+    LOCAL_PROBE_ROUTES,
     PROVIDER_HANDLER_ROUTES,
     PROVIDER_PASSTHROUGH_ROUTES,
+    LocalProbeRoute,
     ProviderHandlerRoute,
     ProviderPassthroughRoute,
 )
@@ -124,6 +126,27 @@ def _register_provider_passthrough_route(
 def _register_provider_passthrough_routes(app: FastAPI, proxy: Any) -> None:
     for spec in PROVIDER_PASSTHROUGH_ROUTES:
         _register_provider_passthrough_route(app, proxy, spec)
+
+
+def _register_local_probe_route(app: FastAPI, spec: LocalProbeRoute) -> None:
+    async def local_probe(request: Request):
+        if request.method == "HEAD":
+            return Response(status_code=200)
+        return JSONResponse({"status": "ok", "service": "headroom-proxy"})
+
+    local_probe.__name__ = (
+        "local_probe_"
+        + spec.method.lower()
+        + "_"
+        + spec.path.strip("/").replace("/", "_")
+        + ("_slash" if spec.path.endswith("/") else "")
+    )
+    app.api_route(spec.path, methods=[spec.method])(local_probe)
+
+
+def _register_local_probe_routes(app: FastAPI) -> None:
+    for spec in LOCAL_PROBE_ROUTES:
+        _register_local_probe_route(app, spec)
 
 
 def _register_provider_handler_route(app: FastAPI, proxy: Any, spec: ProviderHandlerRoute) -> None:
@@ -553,6 +576,8 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     _register_openai_image_routes(app, proxy)
 
     _register_codex_live_routes(app, proxy)
+
+    _register_local_probe_routes(app)
 
     _register_provider_passthrough_routes(app, proxy)
 

@@ -26,10 +26,36 @@ class ProviderHandlerRoute:
     supports_custom_base_url: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class LocalProbeRoute:
+    """A connectivity probe answered by the proxy itself, never forwarded upstream.
+
+    Clients such as Claude Code send keyless ``GET``/``HEAD /api/hello``
+    canaries to check that their base URL is reachable. Forwarding them made
+    the answer depend on the upstream (9Router has no such endpoint and
+    replies 404), so the proxy answers ``200 OK`` locally instead.
+    """
+
+    method: str
+    path: str
+
+
+LOCAL_PROBE_ROUTES: tuple[LocalProbeRoute, ...] = (
+    LocalProbeRoute("GET", "/api/hello"),
+    LocalProbeRoute("HEAD", "/api/hello"),
+    LocalProbeRoute("GET", "/api/hello/"),
+    LocalProbeRoute("HEAD", "/api/hello/"),
+)
+
+
+def is_local_probe_request(method: str, path: str) -> bool:
+    """True when ``method path`` is a probe the proxy answers locally."""
+    upper = method.upper()
+    return any(r.method == upper and r.path == path for r in LOCAL_PROBE_ROUTES)
+
+
 ANTHROPIC_PASSTHROUGH_ROUTES: tuple[ProviderPassthroughRoute, ...] = (
     ProviderPassthroughRoute("POST", "/v1/messages/count_tokens", "anthropic", "count_tokens"),
-    ProviderPassthroughRoute("GET", "/api/hello", "anthropic", "api/hello"),
-    ProviderPassthroughRoute("HEAD", "/api/hello", "anthropic", "api/hello"),
 )
 
 

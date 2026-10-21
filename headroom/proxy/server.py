@@ -117,6 +117,9 @@ from headroom.providers.registry import (
     format_backend_status,
     resolve_api_targets,
 )
+from headroom.providers.route_specs import (
+    is_local_probe_request as _is_local_probe_request,
+)
 from headroom.proxy import runtime_env
 from headroom.proxy.audit import is_auditable_path, record_admin_action
 from headroom.proxy.auth_mode import should_stamp_codex_client
@@ -4228,6 +4231,11 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 _apply_security_headers(rejection)
                 return rejection
             exempt = request.method == "GET" and path in _AUTH_EXEMPT_PATHS
+            # Connectivity probes (GET/HEAD /api/hello) are answered locally by
+            # a dedicated route and never reach the passthrough relay, so they
+            # are safe to serve without the token (route_specs.LOCAL_PROBE_ROUTES).
+            if _is_local_probe_request(request.method, path):
+                exempt = True
 
             from headroom.proxy.forwarded_headers import (
                 load_trusted_gateway_cidrs,
