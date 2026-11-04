@@ -132,11 +132,16 @@ def test_hello_probe_answered_locally_without_forwarding(monkeypatch: Any) -> No
 
 
 def test_hello_probe_exempt_from_proxy_token_nonloopback(monkeypatch: Any) -> None:
+    import inspect
+
     calls = _spy_passthrough(monkeypatch)
     nonloopback = ("203.0.113.5", 44444)
 
     app = _hello_app(proxy_token="s3cr3t-token")
-    with TestClient(app, base_url="http://testserver", client=nonloopback) as client:
+    tc_kwargs: dict[str, Any] = {"base_url": "http://testserver"}
+    if "client" in inspect.signature(TestClient.__init__).parameters:
+        tc_kwargs["client"] = nonloopback
+    with TestClient(app, **tc_kwargs) as client:
         assert client.get("/api/hello").status_code == 200
         assert client.head("/api/hello").status_code == 200
         # The exemption is limited to the probe: other methods/paths still need the token.

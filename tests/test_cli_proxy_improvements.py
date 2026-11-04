@@ -38,6 +38,10 @@ def runner() -> CliRunner:
 def mock_run_server():
     """Patch run_server to a no-op and capture the ProxyConfig passed to it."""
     from headroom.proxy.models import ProxyConfig
+    from headroom.proxy.server import (
+        _get_env_optional_bool,
+        default_periodic_malloc_trim,
+    )
 
     captured: dict = {}
 
@@ -50,12 +54,16 @@ def mock_run_server():
             return []
         return [item.strip() for item in raw.split(",") if item.strip()]
 
-    fake_server = types.ModuleType("headroom.proxy.server")
+    from typing import Any
+
+    fake_server: Any = types.ModuleType("headroom.proxy.server")
     fake_server.ProxyConfig = ProxyConfig
+    fake_server._get_env_optional_bool = _get_env_optional_bool
     fake_server._parse_csv_tools = _parse_csv_tools
     fake_server._parse_exclude_tools = lambda raw=None: set(_parse_csv_tools(raw))
     fake_server._parse_tool_profiles = lambda raw=None: {}
     fake_server._get_code_aware_banner_status = lambda config: "disabled"
+    fake_server.default_periodic_malloc_trim = default_periodic_malloc_trim
     fake_server.run_server = _mock
 
     original = sys.modules.get("headroom.proxy.server")
