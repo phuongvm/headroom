@@ -117,12 +117,9 @@ from headroom.providers.registry import (
     format_backend_status,
     resolve_api_targets,
 )
-from headroom.providers.route_specs import (
-    is_local_probe_request as _is_local_probe_request,
-)
 from headroom.proxy import runtime_env
 from headroom.proxy.audit import is_auditable_path, record_admin_action
-from headroom.proxy.auth_mode import should_stamp_codex_client
+from headroom.proxy.auth_mode import CLIENT_UA_MAP, should_stamp_codex_client
 from headroom.proxy.background_compression import BackgroundCompressor
 from headroom.proxy.budget_basis_policy import resolve_estimated_basis_policy
 from headroom.proxy.buffered_ccr_response import DEFAULT_BUFFERED_CCR_GRACE_SECONDS
@@ -188,6 +185,7 @@ from headroom.proxy.project_context import (
     set_registered_cwd,
     strip_project_path_prefix,
 )
+from headroom.proxy.project_policy import split_project_path
 from headroom.proxy.prometheus_metrics import PrometheusMetrics
 from headroom.proxy.rate_limiter import TokenBucketRateLimiter
 from headroom.proxy.request_body_limit import RequestBodyLimitMiddleware
@@ -2705,15 +2703,23 @@ class HeadroomProxy(
         if timeout is not None:
             post_kwargs["timeout"] = timeout
 
+        from headroom.proxy.handlers.openai import prefers_http1_passthrough
+
+        req_client = (
+            getattr(self, "http_client_h1", None) or self.http_client
+            if prefers_http1_passthrough(url)
+            else self.http_client
+        )
+
         for attempt in range(self.config.retry_max_attempts):
             try:
                 if stream:
                     # For streaming, we return early - retry happens at higher level
-                    return await self.http_client.post(  # type: ignore[union-attr]
+                    return await req_client.post(  # type: ignore[union-attr]
                         url, **post_kwargs
                     )
                 else:
-                    response = await self.http_client.post(  # type: ignore[union-attr]
+                    response = await req_client.post(  # type: ignore[union-attr]
                         url, **post_kwargs
                     )
 
@@ -3080,6 +3086,75 @@ def read_proxy_token(headers: Mapping[str, str]) -> str | None:
     return None
 
 
+# Generic HTTP clients a ``proxy_auth_rejected`` line may name by their
+# User-Agent product token, after the agent harnesses in CLIENT_UA_MAP. Any
+# other User-Agent logs as ``other``: the header is caller-controlled text.
+_AUTH_REJECTION_CLIENTS = frozenset(
+    {
+        "anthropic",
+        "axios",
+        "codex_cli_rs",
+        "curl",
+        "go-http-client",
+        "mozilla",
+        "node",
+        "okhttp",
+        "openai",
+        "python-httpx",
+        "python-requests",
+        "python-urllib",
+        "wget",
+    }
+)
+
+
+def _auth_rejection_context(headers: Mapping[str, str]) -> tuple[str, str]:
+    """``(ua, xff)`` for a rejection log line, drawn from a fixed vocabulary.
+
+    Both headers are caller-controlled, so neither is logged as received.
+    ``ua`` is the harness name ``CLIENT_UA_MAP`` gives the User-Agent (the
+    same names the rest of the proxy uses, e.g. ``claude-code``, ``codex``),
+    else its product token when ``_AUTH_REJECTION_CLIENTS`` lists it, else
+    ``other``. ``X-Client`` is deliberately not consulted: unlike
+    ``classify_client``, nothing here may echo free text. ``xff`` is the leftmost
+    ``X-Forwarded-For`` hop when it is a plain IP address, else ``invalid``.
+    Either is ``none`` when its header is absent. ``xff`` is unverified, so it
+    only helps attribute rejected callers behind a gateway whose peer address
+    is all the gate sees. It is never used for any decision. Credentials are
+    never read here.
+    """
+    from headroom.proxy.forwarded_policy import header_first
+
+    ua_lower = str(headers.get("user-agent") or "").lower()
+    product = ua_lower.partition("/")[0].strip()
+    harness = next((name for needle, name in CLIENT_UA_MAP if needle in ua_lower), None)
+    if not ua_lower:
+        ua = "none"
+    elif harness is not None:
+        ua = harness
+    else:
+        ua = product if product in _AUTH_REJECTION_CLIENTS else "other"
+
+    hop = header_first(str(headers.get("x-forwarded-for") or ""))
+    try:
+        address = ipaddress.ip_address(hop)
+    except ValueError:
+        return ua, "invalid" if hop else "none"
+    # An IPv6 zone index (fe80::1%<zone>) is free text, so refuse it too.
+    return ua, "invalid" if getattr(address, "scope_id", None) else str(address)
+
+
+def _auth_rejection_path(path: object) -> str:
+    """The request path for a rejection log line, with control characters escaped.
+
+    The ASGI server percent-decodes the path, so an unauthenticated caller can
+    put raw CR/LF, NUL or terminal escapes in it (``%0A``, ``%1B``) and forge or
+    garble log lines. ``unicode_escape`` renders every non-printable or
+    non-ASCII character (and the backslash itself) as an escape sequence.
+    """
+    return str(path).encode("unicode_escape").decode("ascii")
+
+
 _PROXY_TOKEN_HEADER = b"x-headroom-proxy-token"
 
 
@@ -3204,11 +3279,15 @@ class WebSocketAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
+        user_agent, forwarded_for = _auth_rejection_context(headers)
         logger.warning(
-            "event=proxy_auth_rejected transport=websocket path=%s client=%s reason=%s",
-            scope.get("path"),
+            "event=proxy_auth_rejected transport=websocket path=%s client=%s reason=%s "
+            "ua=%s xff=%s",
+            _auth_rejection_path(scope.get("path")),
             client_host,
             "missing_token" if provided is None else "bad_token",
+            user_agent,
+            forwarded_for,
         )
         # Receive the handshake before refusing it: ASGI servers send
         # ``websocket.connect`` and wait for the application to answer, and
@@ -4349,12 +4428,20 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
                 rejection = JSONResponse(status_code=404, content={"error": "not_found"})
                 _apply_security_headers(rejection)
                 return rejection
-            exempt = request.method == "GET" and path in _AUTH_EXEMPT_PATHS
-            # Connectivity probes (GET/HEAD /api/hello) are answered locally by
-            # a dedicated route and never reach the passthrough relay, so they
-            # are safe to serve without the token (route_specs.LOCAL_PROBE_ROUTES).
-            if _is_local_probe_request(request.method, path):
-                exempt = True
+            # Anthropic SDK clients (Claude Code among them) probe reachability
+            # with an unauthenticated GET/HEAD /api/hello that never carries
+            # custom headers, so it cannot hold the proxy token. Let it past
+            # the token check, marked so its passthrough route answers it
+            # locally and empty instead of relaying an anonymous request
+            # upstream. It still runs through extension middleware, which sits
+            # inside this gate and may refuse it. The path is matched as
+            # routed: a /p/<project> prefix is only stripped further in.
+            hello_probe = (
+                request.method in ("GET", "HEAD") and split_project_path(path)[1] == "/api/hello"
+            )
+            if hello_probe:
+                request.state.headroom_local_hello_probe = True
+            exempt = hello_probe or (request.method == "GET" and path in _AUTH_EXEMPT_PATHS)
 
             from headroom.proxy.forwarded_headers import (
                 load_trusted_gateway_cidrs,
@@ -4388,17 +4475,21 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             if has_cf_access and is_trusted_peer and is_trusted_host:
                 exempt = True
                 request.state.proxy_authenticated = True
-
             if not exempt and not is_loopback_host(client_host):
                 provided = _extract_proxy_token(request.headers)
                 if provided is None or not hmac.compare_digest(
                     provided.encode("utf-8", "replace"), _proxy_token_bytes
                 ):
+                    user_agent, forwarded_for = _auth_rejection_context(request.headers)
                     logger.warning(
-                        "event=proxy_auth_rejected path=%s client=%s reason=%s",
-                        path,
+                        "event=proxy_auth_rejected method=%s path=%s client=%s reason=%s "
+                        "ua=%s xff=%s",
+                        request.method,
+                        _auth_rejection_path(path),
                         client_host,
                         "missing_token" if provided is None else "bad_token",
+                        user_agent,
+                        forwarded_for,
                     )
                     rejection = JSONResponse(status_code=401, content={"error": "unauthorized"})
                     _apply_security_headers(rejection)
@@ -5911,7 +6002,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
         )
 
     # Debug endpoints
-    @app.get("/debug/memory", dependencies=[Depends(_require_loopback)])
+    @app.get("/debug/memory", dependencies=[Depends(_require_loopback_or_container_gateway)])
     async def debug_memory():
         """Get detailed memory usage statistics.
 

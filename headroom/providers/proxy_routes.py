@@ -7,8 +7,9 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
+from headroom.log_safety import redact_url
 from headroom.providers.cloudcode import normalize_cloudcode_passthrough_path
 from headroom.providers.codex.endpoints import codex_backend_url
 from headroom.providers.codex.headers import drop_header
@@ -49,10 +50,8 @@ from headroom.providers.proxy_targets import (
     vertex_target_for_location as _vertex_target_for_location,
 )
 from headroom.providers.route_specs import (
-    LOCAL_PROBE_ROUTES,
     PROVIDER_HANDLER_ROUTES,
     PROVIDER_PASSTHROUGH_ROUTES,
-    LocalProbeRoute,
     ProviderHandlerRoute,
     ProviderPassthroughRoute,
 )
@@ -110,6 +109,11 @@ def _register_provider_passthrough_route(
     spec: ProviderPassthroughRoute,
 ) -> None:
     async def provider_passthrough(request: Request):
+        # A reachability probe the token gate let through without a credential
+        # (/api/hello): answer it here, never relay it upstream anonymously.
+        if getattr(request.state, "headroom_local_hello_probe", False):
+            return Response(status_code=200)
+
         # Honor the per-request upstream override like /v1/messages and the
         # catch-all do. Clients that speak one wire format but authenticate
         # against a custom OpenAI-compatible gateway must reach that gateway
@@ -145,27 +149,6 @@ def _register_provider_passthrough_route(
 def _register_provider_passthrough_routes(app: FastAPI, proxy: Any) -> None:
     for spec in PROVIDER_PASSTHROUGH_ROUTES:
         _register_provider_passthrough_route(app, proxy, spec)
-
-
-def _register_local_probe_route(app: FastAPI, spec: LocalProbeRoute) -> None:
-    async def local_probe(request: Request):
-        if request.method == "HEAD":
-            return Response(status_code=200)
-        return JSONResponse({"status": "ok", "service": "headroom-proxy"})
-
-    local_probe.__name__ = (
-        "local_probe_"
-        + spec.method.lower()
-        + "_"
-        + spec.path.strip("/").replace("/", "_")
-        + ("_slash" if spec.path.endswith("/") else "")
-    )
-    app.api_route(spec.path, methods=[spec.method])(local_probe)
-
-
-def _register_local_probe_routes(app: FastAPI) -> None:
-    for spec in LOCAL_PROBE_ROUTES:
-        _register_local_probe_route(app, spec)
 
 
 def _register_provider_handler_route(app: FastAPI, proxy: Any, spec: ProviderHandlerRoute) -> None:
@@ -229,9 +212,9 @@ def _register_openai_responses_subpath_route(
     spec: OpenAIResponsesSubpathRoute,
 ) -> None:
     async def openai_responses_subpath(request: Request, sub_path: str):
-        assert proxy.http_client is not None
+        codex_subpath_client = getattr(proxy, "http_client_h1", None) or proxy.http_client
         chatgpt_response = await handle_chatgpt_codex_responses_subpath(
-            proxy.http_client,
+            codex_subpath_client,
             request,
             sub_path,
         )
@@ -546,7 +529,7 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
         custom_base = request.headers.get("x-headroom-base-url", "").strip()
         if custom_base:
             if not await is_safe_upstream_url_async(custom_base):
-                logger.warning("rejecting unsafe x-headroom-base-url: %r", custom_base)
+                logger.warning("rejecting unsafe x-headroom-base-url: %s", redact_url(custom_base))
                 raise HTTPException(status_code=400, detail="Rejected unsafe upstream base URL")
             # Only the destination is overridden: keep the provider the request's
             # auth selects, so Anthropic-auth requests still get model-id
@@ -605,8 +588,6 @@ def register_provider_routes(app: FastAPI, proxy: Any) -> None:
     _register_openai_image_routes(app, proxy)
 
     _register_codex_live_routes(app, proxy)
-
-    _register_local_probe_routes(app)
 
     _register_provider_passthrough_routes(app, proxy)
 

@@ -4,10 +4,6 @@ Claude Code (and other Anthropic SDK clients) sends unauthenticated
 ``HEAD /api/hello`` or ``GET /api/hello`` requests to test upstream
 connectivity. Because the probe carries no authorization headers,
 it must not fall through to the default OpenAI target.
-
-The proxy now answers the probe itself with ``200 OK`` instead of forwarding
-it: the configured upstream (9Router) has no ``/api/hello`` and replied 404,
-which made Claude Code report the proxy as unreachable.
 """
 
 from __future__ import annotations
@@ -21,7 +17,6 @@ from headroom.providers.proxy_targets import (
     is_anthropic_hello_path,
     select_passthrough_base_url,
 )
-from headroom.providers.route_specs import PROVIDER_PASSTHROUGH_ROUTES, is_local_probe_request
 from headroom.proxy.server import HeadroomProxy, ProxyConfig, create_app
 
 
@@ -65,88 +60,43 @@ def test_select_passthrough_base_url_routes_hello_to_anthropic() -> None:
     assert select_passthrough_base_url(proxy, {}, "/other/endpoint") == "https://openai.custom.test"
 
 
-def _hello_app(**overrides: Any) -> Any:
-    return create_app(
-        ProxyConfig(
-            optimize=False,
-            cache_enabled=False,
-            rate_limit_enabled=False,
-            anthropic_api_url="https://api.anthropic.test",
-            openai_api_url="https://api.openai.test",
-            **overrides,
-        )
-    )
-
-
-def _spy_passthrough(monkeypatch: Any) -> list[tuple[str, str, str, str]]:
+def test_hello_probe_end_to_end_routing(monkeypatch: Any) -> None:
     calls: list[tuple[str, str, str, str]] = []
 
     async def fake_passthrough(
         self: Any, request: Any, base_url: str, sub_path: str = "", provider_name: str = ""
     ) -> JSONResponse:
         calls.append((request.method, request.url.path, base_url, provider_name))
-        return JSONResponse({"forwarded": True}, status_code=404)
+        return JSONResponse(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "base_url": base_url,
+                "sub_path": sub_path,
+                "provider": provider_name,
+            }
+        )
 
     monkeypatch.setattr(HeadroomProxy, "handle_passthrough", fake_passthrough)
-    return calls
 
+    app = create_app(
+        ProxyConfig(
+            optimize=False,
+            cache_enabled=False,
+            rate_limit_enabled=False,
+            anthropic_api_url="https://api.anthropic.test",
+            openai_api_url="https://api.openai.test",
+        )
+    )
 
-def test_local_probe_routes_declared() -> None:
-    assert is_local_probe_request("GET", "/api/hello")
-    assert is_local_probe_request("HEAD", "/api/hello")
-    assert is_local_probe_request("head", "/api/hello/")
-    assert not is_local_probe_request("POST", "/api/hello")
-    assert not is_local_probe_request("GET", "/api/hello/subpath")
-    assert all(r.path != "/api/hello" for r in PROVIDER_PASSTHROUGH_ROUTES)
-
-
-def test_hello_probe_answered_locally_without_forwarding(monkeypatch: Any) -> None:
-    calls = _spy_passthrough(monkeypatch)
-
-    with TestClient(_hello_app()) as client:
+    with TestClient(app) as client:
         # Keyless HEAD request as sent by Claude Code's Bun connectivity probe.
         head_resp = client.head("/api/hello", headers={"user-agent": "Bun/1.1.20"})
         assert head_resp.status_code == 200
-        assert head_resp.headers["content-length"] == "0"
-        assert head_resp.text == ""
+        assert calls[-1] == ("HEAD", "/api/hello", "https://api.anthropic.test", "anthropic")
 
         # Keyless GET request.
         get_resp = client.get("/api/hello")
         assert get_resp.status_code == 200
-        assert get_resp.headers["content-type"] == "application/json"
-        assert get_resp.json() == {"status": "ok", "service": "headroom-proxy"}
-
-        # Trailing slash variants
-        head_slash_resp = client.head("/api/hello/")
-        assert head_slash_resp.status_code == 200
-        assert head_slash_resp.headers["content-length"] == "0"
-        assert head_slash_resp.text == ""
-
-        get_slash_resp = client.get("/api/hello/")
-        assert get_slash_resp.status_code == 200
-        assert get_slash_resp.headers["content-type"] == "application/json"
-        assert get_slash_resp.json() == {"status": "ok", "service": "headroom-proxy"}
-
-    # Never relayed upstream (9Router has no /api/hello and answers 404).
-    assert calls == []
-
-
-def test_hello_probe_exempt_from_proxy_token_nonloopback(monkeypatch: Any) -> None:
-    import inspect
-
-    calls = _spy_passthrough(monkeypatch)
-    nonloopback = ("203.0.113.5", 44444)
-
-    app = _hello_app(proxy_token="s3cr3t-token")
-    tc_kwargs: dict[str, Any] = {"base_url": "http://testserver"}
-    if "client" in inspect.signature(TestClient.__init__).parameters:
-        tc_kwargs["client"] = nonloopback
-    with TestClient(app, **tc_kwargs) as client:
-        assert client.get("/api/hello").status_code == 200
-        assert client.head("/api/hello").status_code == 200
-        # The exemption is limited to the probe: other methods/paths still need the token.
-        assert client.post("/api/hello").status_code == 401
-        assert client.get("/api/hello/subpath").status_code == 401
-        assert client.get("/v1/models").status_code == 401
-
-    assert calls == []
+        assert calls[-1] == ("GET", "/api/hello", "https://api.anthropic.test", "anthropic")
+        assert get_resp.json()["base_url"] == "https://api.anthropic.test"
