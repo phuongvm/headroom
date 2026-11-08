@@ -4516,6 +4516,7 @@ def create_app(config: ProxyConfig | None = None) -> FastAPI:
             }
             is_trusted_host = host_domain in trusted_hosts
 
+            # HEADROOM-INV-2: Dual-header & Cloudflare Access gate
             # Dashboard UI & static assets: allow GET from loopback or trusted reverse proxy gateway on trusted host
             is_dashboard_ui = request.method == "GET" and (
                 path in {"/dashboard", "/dashboard/", "/dashboard/settings", "/favicon.ico"}
