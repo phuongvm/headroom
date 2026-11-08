@@ -22,7 +22,7 @@ import importlib.util
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, get_type_hints
 
 from headroom.providers.registry import BackendUnavailableError
 from headroom.proxy.public_errors import client_message
@@ -205,5 +205,12 @@ def with_vertex_diagnostics(
             publisher=kwargs.get("publisher", ""),
             model=kwargs.get("model", ""),
         )
+
+    try:
+        resolved_hints = get_type_hints(handler)
+        handler.__annotations__ = resolved_hints
+        wrapper.__annotations__ = resolved_hints
+    except Exception:  # noqa: BLE001
+        pass
 
     return wrapper
